@@ -644,7 +644,7 @@ class RWKV_RNN(MyModule):
         head_size = self.head_size
         n_head = self.n_head
         STATE = {}
-        for i in range(1584 // (2 + head_size)):
+        for i in range(self.num_layer):
             start = (2 + head_size) * i + 2
             end = (2 + head_size) * (i + 1)
             layer_state = state[:, start:end, :].detach()  # 使用 detach() 创建一个新的张量
