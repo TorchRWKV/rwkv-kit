@@ -1,5 +1,6 @@
 import time
 import os
+os.environ["RWKV_JIT_ON"] = "1"
 import torch
 from src.model import RWKV_RNN
 from src.model_utils import device_checker

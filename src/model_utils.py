@@ -6,6 +6,7 @@ import torch, types, os, gc, math
 import numpy as np
 import torch.nn as nn
 from torch.nn import functional as F
+from packaging import version
 
 ########################################################################################################
 # RWKV TIMEMix
@@ -63,7 +64,7 @@ class RWKV_Tmix_x060(nn.Module):
         self.output = nn.Linear(args['dim_att'], args['n_embd'], bias=False)
         self.gate = nn.Linear(args['n_embd'], args['dim_att'], bias=False)
         self.ln_x = nn.GroupNorm(self.n_head, args['dim_att'], eps=(1e-5)*(args['head_size_divisor']**2))
-    
+
 ########################################################################################################
 # RWKV ChannelMix
 ########################################################################################################
@@ -115,7 +116,7 @@ class Block(nn.Module):
 
         self.att = RWKV_Tmix_x060(args, layer_id)
         self.ffn = RWKV_CMix_x060(args, layer_id)
-        
+
     def forward(self, x):
 
         if self.layer_id == 0:
@@ -158,7 +159,7 @@ class RWKV_x060(nn.Module):
         x = self.head(x)
 
         return x
-    
+
     def init_params(self):
         m = self.state_dict()
         n_params = 0
@@ -215,7 +216,7 @@ class RWKV_x060(nn.Module):
                     nn.init.orthogonal_(m[n], gain=scale)
 
             n_params += m[n].numel()
-        
+
         # print('model params', n_params)
         gc.collect()
 
@@ -226,7 +227,7 @@ def device_checker(args):
     if torch.cuda.is_available():
         args['device'] = 'cuda'
         return args
-    
+
     else:
         try:
             import torch_musa
@@ -236,7 +237,11 @@ def device_checker(args):
         except:
             pass
         try:
-            import intel_extension_for_pytorch as ipex
+            pytorch_version = torch.__version__.split('.')[:2]
+            if int(pytorch_version[0]) > 2 or (int(pytorch_version[0]) == 2 and int(pytorch_version[1]) > 4):
+                pass
+            else:
+                import intel_extension_for_pytorch as ipex
             if torch.xpu.is_available():
                 args['device'] = 'xpu'
                 return args
