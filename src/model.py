@@ -163,13 +163,13 @@ class RWKV_Block(MyModule):
         Returns:
             torch.Tensor: 混合后的张量，形状与输入的x相同。
         """
-        i0 = (2 + self.head_size) * i + 0
+        i0 = (2 + self.head_size) * i
         sx = state[:, i0] - x # 信息压缩到每一层的编号0位置
         state[:, i0] = x
-        xk = x + sx * self.ffn_time_maa_k
-        xr = x + sx * self.ffn_time_maa_r
+        xk = torch.addcmul(x, sx, self.ffn_time_maa_k)
+        xr = torch.addcmul(x, sx, self.ffn_time_maa_r)
         r = torch.sigmoid(self.ffn_receptance(xr))
-        k = torch.relu(self.ffn_key(xk)).pow(2)
+        k = torch.relu(self.ffn_key(xk)).pow_(2)
         output = r * self.ffn_value(k)
         return output
 
@@ -184,7 +184,7 @@ class RWKV_Block(MyModule):
         Returns:
             torch.Tensor: 混合后的张量，形状与输入的x相同。
         """
-        i0 = (2 + self.head_size) * i + 0
+        i0 = (2 + self.head_size) * i
 
         sx_lerp = torch.empty_like(x)
         sx_lerp[:, 0] = state[:, i0] - x[:, 0]
@@ -196,11 +196,11 @@ class RWKV_Block(MyModule):
 
         state[:, i0] = x[:, -1] # 这里把state赋值为最后一个输入
 
-        xk = x + sx_lerp * self.ffn_time_maa_k
-        xr = x + sx_lerp * self.ffn_time_maa_r
+        xk = torch.addcmul(x, sx_lerp, self.ffn_time_maa_k)
+        xr = torch.addcmul(x, sx_lerp, self.ffn_time_maa_r)
 
         r = torch.sigmoid(self.ffn_receptance(xr)) # [Batch, L, 2048]
-        k = torch.relu(self.ffn_key(xk)).pow(2)
+        k = torch.relu(self.ffn_key(xk)).pow_(2)
 
         output = r * self.ffn_value(k)
         return output
@@ -237,16 +237,17 @@ class RWKV_Block(MyModule):
         sx = state[:, i1] - x
         state[:, i1] = x # 信息压缩到每一层的编号1位置
 
-        xxx = x + sx * self.att_time_maa_x
+        xxx = torch.addcmul(x, sx, self.att_time_maa_x)
         xxx = torch.tanh(xxx @ self.att_time_maa_w1).view(batch_size, 5, 1, -1)
         xxx = torch.matmul(xxx, self.att_time_maa_w2).view(batch_size, 5, -1)
         mw, mk, mv, mr, mg = xxx.unbind(dim=1)
 
-        xw = x + sx * (self.att_time_maa_w + mw)
-        xk = x + sx * (self.att_time_maa_k + mk)
-        xv = x + sx * (self.att_time_maa_v + mv)
-        xr = x + sx * (self.att_time_maa_r + mr)
-        xg = x + sx * (self.att_time_maa_g + mg)
+        xw, xk, xv, xr, xg = torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x)
+        torch.addcmul(x, sx, self.att_time_maa_w + mw, out=xw)
+        torch.addcmul(x, sx, self.att_time_maa_k + mk, out=xk)
+        torch.addcmul(x, sx, self.att_time_maa_v + mv, out=xv)
+        torch.addcmul(x, sx, self.att_time_maa_r + mr, out=xr)
+        torch.addcmul(x, sx, self.att_time_maa_g + mg, out=xg)
 
         w = (self.att_time_decay + (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
 
@@ -258,11 +259,12 @@ class RWKV_Block(MyModule):
         v = self.att_value(xv).view(batch_size, H, 1, S)
         g = self.silu(self.att_gate(xg))
 
+
         # 使用注意力机制更新状态
         s = state[:, (2+S)*i+2:(2+S)*(i+1), :].view(batch_size, H, S, S)
         a = k @ v
-        x = r @ (self.att_time_faaaa * a + s)
-        s = a + torch.exp(w) * s
+        x = r @ torch.addcmul(s, self.att_time_faaaa, a)
+        s = torch.addcmul(a, torch.exp(w), s)
         # 更新第i层STATE的注意力参数
         state[:, (2+S)*i+2:(2+S)*(i+1), :] = s.view(batch_size, S, -1)
         return x, state, g
@@ -313,11 +315,12 @@ class RWKV_Block(MyModule):
 
         mw, mk, mv, mr, mg = xxx.unbind(dim=2) # [10, 100, 2048]
 
-        xw = x + sx_lerp * (self.att_time_maa_w + mw) # torch.Size([B, L, 2048])
-        xk = x + sx_lerp * (self.att_time_maa_k + mk)
-        xv = x + sx_lerp * (self.att_time_maa_v + mv)
-        xr = x + sx_lerp * (self.att_time_maa_r + mr)
-        xg = x + sx_lerp * (self.att_time_maa_g + mg)
+        xw, xk, xv, xr, xg = torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x) # torch.Size([B, L, 2048])
+        torch.addcmul(x, sx_lerp, self.att_time_maa_w + mw, out=xw)
+        torch.addcmul(x, sx_lerp, self.att_time_maa_k + mk, out=xk)
+        torch.addcmul(x, sx_lerp, self.att_time_maa_v + mv, out=xv)
+        torch.addcmul(x, sx_lerp, self.att_time_maa_r + mr, out=xr)
+        torch.addcmul(x, sx_lerp, self.att_time_maa_g + mg, out=xg)
 
         w = (self.att_time_decay + (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
         w = -torch.exp(w.view(batch_size, L, H, S, 1))
@@ -327,29 +330,24 @@ class RWKV_Block(MyModule):
         v = self.att_value(xv).view(batch_size, L, H, 1, S)
         g = self.silu(self.att_gate(xg)) # [10, 100, 2048]
 
-        # 使用注意力机制更新状态
-        s = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S)
+
         a = k @ v # a: [batch_size, L, H, S, S]
 
         w = torch.exp(w)
-        state_s = torch.zeros(batch_size, L, H, S, S, dtype=x.dtype, device=x.device) #初始化state_s的结果张量
-        state_s[:, 0] = s #把第一个a_{t-1, j}赋值给state_s
-        if not training:
-            for l in range(L-1):
-                s = a[:, l] + w[:, l] * s #.clone() #这里计算出state_s的值.clone()
-                state_s[:, l+1] = s # 循环赋值
-            s = a[:, -1] + w[:, -1] * s #.clone() #这里计算出最后一个state的值赋值给传入的state
-        else:
-            for l in range(L-1):
-                s = a[:, l] + w[:, l] * s.clone() #这里计算出state_s的值.clone()
-                state_s[:, l+1] = s # 循环赋值
-            s = a[:, -1] + w[:, -1] * s.clone() #这里计算出最后一个state的值赋值给传入的state
+        state_s = torch.zeros(batch_size, L+1, H, S, S, dtype=x.dtype, device=x.device) #初始化state_s的结果张量
+        # 使用注意力机制更新状态
+        state_s[:, 0] = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S) #把第一个a_{t-1, j}赋值给state_s
 
 
-        state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
+        for l in range(L):
+            state_s[:, l+1] = torch.addcmul(a[:, l], w[:, l], state_s[:, l])
 
-        x = r @ (self.att_time_faaaa * a + state_s)
+
+        state[:, (2+S)*i+2:(2+S)*(i+1)] = state_s[:, -1].view(batch_size, S, -1)
+
+        x = r @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
         return x, state, g
+
 
     @MyFunction
     def time_mixing_parallel_jit2(self, x: torch.Tensor, g: torch.Tensor, batch_size: int, L:int):
