@@ -15,7 +15,8 @@ if __name__ == '__main__':
         'parrallel': 'True', # 是否使用并行计算
         'STATE_NAME': 'weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth', # 如果不加载state权重，请置为''
         # 请务必保证模型权重和State权重对应，这里暂时不做检查
-        'dataformat': 'bf16'
+        'dataformat': 'bf16',
+        'prefill_kenerl': 'torch', # ["torch", "triton", "triton-chunk", "manual-torch"]
     }
     
     

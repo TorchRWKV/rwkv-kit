@@ -12,6 +12,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple
 from .model_utils import RWKV_x060
+from einops import rearrange
+from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6, native_recurrent_rwkv6
 
 def __nop(ob):
     return ob
@@ -42,6 +44,7 @@ class RWKV_Block(MyModule):
         self.n_head = n_head
         self.head_size = n_embd // n_head
         self.onnx_opset = onnx_opset
+        self.args = args
 
         # 初始化层归一化
         if self.onnx_opset >= 17:
@@ -273,7 +276,7 @@ class RWKV_Block(MyModule):
     def time_mixing_jit2(self, x:torch.Tensor,g):
         return self.att_output(self.att_group_norm(x.flatten(start_dim=1)) * g)
 
-    def time_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training:bool= False) -> torch.Tensor:
+    def time_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
         """
         并行处理的时间混合函数。
         Args:
@@ -284,8 +287,9 @@ class RWKV_Block(MyModule):
             torch.Tensor: 混合后的时间状态张量，形状与输入的state相同。
         """
         batch_size, L, H, S = x.size(0), x.size(1), self.n_head, self.head_size
-        x, state, g = self.time_mixing_parallel_jit1(x, state, i, batch_size, L, H, S, training)
-
+        r, w, k, v, g, state = self.time_mixing_parallel_jit1(x, state, i, batch_size, L, H, S)
+        # x, state, g = self.time_mixing_parallel_jit1(x, state, i, batch_size, L, H, S)
+        x, state = self.apply_time_mixxing_kernel(r, w, k, v, state, i, batch_size, L, H, S, backend=getattr(self.args, 'prefill_kenerl', 'torch'))
         # 展平x并应用组归一化
         if self.onnx_opset >= 18:
             x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
@@ -298,7 +302,7 @@ class RWKV_Block(MyModule):
 
     @MyFunction
     def time_mixing_parallel_jit1(self, x: torch.Tensor, state: torch.Tensor, i: int,
-                                    batch_size: int, L: int, H: int, S: int, training:bool = False):
+                                    batch_size: int, L: int, H: int, S: int):
         i1 = (2 + S) * i + 1
         # 初始化结果张量
         sx_lerp = torch.empty_like(x)
@@ -325,29 +329,92 @@ class RWKV_Block(MyModule):
         w = (self.att_time_decay + (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
         w = -torch.exp(w.view(batch_size, L, H, S, 1))
 
-        r = self.att_receptance(xr).view(batch_size, L, H, 1, S)
-        k = self.att_key(xk).view(batch_size, L, H, S, 1)
-        v = self.att_value(xv).view(batch_size, L, H, 1, S)
+        r = self.att_receptance(xr)
+        k = self.att_key(xk)
+        v = self.att_value(xv)
         g = self.silu(self.att_gate(xg)) # [10, 100, 2048]
 
 
-        a = k @ v # a: [batch_size, L, H, S, S]
+        return r, w, k, v, g, state
 
+    def apply_time_mixxing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
+                                v: torch.Tensor, state: torch.Tensor, i: int,
+                                    batch_size: int, L: int, H: int, S: int, backend: str="torch"):
+        """
+        Apply the time mixing kernel operation with support for multiple backend implementations.
+
+        This function implements the core time mixing operation of the RWKV model,
+        offering different backend options for computation:
+
+        - "torch": Native PyTorch implementation. Uses built-in PyTorch operations,
+                which may be slower on certain hardware.
+
+        - "manual-torch": Manual implementation with PyTorch, using FP32 for backward pass.
+                        Suitable for scenarios requiring precise gradients.
+
+        - "triton": Triton backend implementation, computing in FP32.
+                    Offers a good balance between performance and precision.
+
+        - "triton-chunk": chunk rwkv Triton backend, computing at input precision.
+                        Provides optimal performance but may introduce some precision loss.
+                        Suitable for state fine-tuning but not recommended for full fine-tuning
+                        due to potentially larger gradient errors.
+
+        Args:
+            r, w, k, v (torch.Tensor): Input tensors
+            state (torch.Tensor): State tensor
+            i (int): Current head index being processed
+            batch_size (int): Batch size
+            L (int): Sequence length
+            H (int): Number of attention heads
+            S (int): State size
+            backend (str): Computation backend choice, default is "torch"
+
+        Returns:
+            tuple: (x, state)
+                x (torch.Tensor): Output tensor
+                state (torch.Tensor): Updated state tensor
+        """
+        s = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S)
+        assert backend in ["torch", "triton", "triton-chunk", "manual-torch"]
+        # we dont want to support cuda, since it is only supported by nvidia and AMD
+        if backend != "torch":
+            u = self.att_time_faaaa.view(self.n_head, self.head_size)
+            r = rearrange(r.squeeze(-1), 'b l (h d) -> b h l d', h=H)
+            k = rearrange(k, 'b l (h d) -> b h l d', h=H)
+            v = rearrange(v, 'b l (h d) -> b h l d', h=H)
+            w = rearrange(w.squeeze(-1), 'b l h d -> b h l d', h=H)
+            s = s.transpose(2, 3)
+
+            # Choose the appropriate function based on the backend
+            if backend == "manual-torch":
+                kernel_func = native_recurrent_rwkv6
+            elif backend == "triton":
+                kernel_func = fused_recurrent_rwkv6
+            else:  # backend == "triton-chunk"
+                kernel_func = chunk_rwkv6
+            # Apply the chosen kernel function
+            o, state_layer = kernel_func(r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
+            x = rearrange(o, 'b h l d -> b l (h d)')
+            state[:, (2+S)*i+2:(2+S)*(i+1)] = state_layer.view(batch_size, S, -1)
+
+        else:
+            x, state_layer = self.native_torch_time_mixing_kernel(r, w, k, v, s, batch_size, L, H, S)
+            state[:, (2+S)*i+2:(2+S)*(i+1)] = state_layer.view(batch_size, S, -1)
+        return x, state
+
+    @MyFunction
+    def native_torch_time_mixing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
+                                       v: torch.Tensor, s: torch.Tensor, batch_size: int,
+                                       L: int, H: int, S: int):
+        a = k.view(batch_size, L, H, S, 1) @ v.view(batch_size, L, H, 1, S) # a: [batch_size, L, H, S, S]
         w = torch.exp(w)
-        state_s = torch.zeros(batch_size, L+1, H, S, S, dtype=x.dtype, device=x.device) #初始化state_s的结果张量
-        # 使用注意力机制更新状态
-        state_s[:, 0] = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S) #把第一个a_{t-1, j}赋值给state_s
-
-
+        state_s = torch.zeros(batch_size, L+1, H, S, S, dtype=s.dtype, device=s.device)
+        state_s[:, 0] = s
         for l in range(L):
             state_s[:, l+1] = torch.addcmul(a[:, l], w[:, l], state_s[:, l])
-
-
-        state[:, (2+S)*i+2:(2+S)*(i+1)] = state_s[:, -1].view(batch_size, S, -1)
-
-        x = r @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
-        return x, state, g
-
+        x = r.view(batch_size, L, H, 1, S) @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
+        return x, state_s[:, -1].view(batch_size, S, -1)
 
     @MyFunction
     def time_mixing_parallel_jit2(self, x: torch.Tensor, g: torch.Tensor, batch_size: int, L:int):
@@ -372,7 +439,7 @@ class RWKV_Block(MyModule):
             x = x + self.channel_mixing(self.manual_layer_norm(x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
         return x
 
-    def forward_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training:bool = False) -> torch.Tensor:
+    def forward_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
         """
         模型的并行前向传播。
         Args:
@@ -383,10 +450,10 @@ class RWKV_Block(MyModule):
             torch.Tensor: 前向传播结果张量，形状与输入的x相同。
         """
         if self.onnx_opset >= 17:
-            x = x + self.time_mixing_parallel(self.ln1(x), state, i, training=training)
+            x = x + self.time_mixing_parallel(self.ln1(x), state, i)
             x = x + self.channel_mixing_parallel(self.ln2(x), state, i)
         else:
-            x = x + self.time_mixing_parallel(self.manual_layer_norm(x, self.ln1_weight, self.ln1_bias, 1e-5), state, i, training=training)
+            x = x + self.time_mixing_parallel(self.manual_layer_norm(x, self.ln1_weight, self.ln1_bias, 1e-5), state, i)
             x = x + self.channel_mixing_parallel(self.manual_layer_norm(x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
         return x
 
@@ -539,7 +606,7 @@ class RWKV_RNN(MyModule):
             x = self.head(x)
         return x, state
 
-    def forward_parallel(self, token: torch.Tensor, state: torch.Tensor, training:bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_parallel(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         模型的并行前向传播。
         Args:
@@ -555,7 +622,7 @@ class RWKV_RNN(MyModule):
             x = self.manual_layer_norm(x, self.ln0_weight, self.ln0_bias, 1e-5)
         # 开始循环推理RWKV Block
         for i, block in enumerate(self.blocks):
-            x = block.forward_parallel(x, state, i, training=training)
+            x = block.forward_parallel(x, state, i)
         if self.onnx_opset >= 17:
             x = self.forward_jit2(x)
         else:
