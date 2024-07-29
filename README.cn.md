@@ -1,105 +1,100 @@
 # TorchRWKV
 
-TorchRWKV is a pure PyTorch implementation of the RWKV large language model inference framework. This project aims to provide a flexible and easily scalable PyTorch implementation for the RWKV x060 model, supporting various features such as batch inference, parallel inference, ONNX format export, and standalone training.
+TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该项目旨在为 RWKV x060 模型提供一个灵活、易于扩展的 PyTorch 实现，同时支持多种功能，如批量推理、并行推理、ONNX 格式导出和单机训练。
 
-## Features
+## 特性
 
-- Native PyTorch implementation
-- Batch inference support
-- Parallel inference to fully leverage RWKV advantages
-- Clean, readable, and easily extendable codebase
-- ONNX format model export and inference
-- Simple standalone training
+- 原生 PyTorch 实现
+- 支持批量推理
+- 支持并行推理，充分发挥 RWKV 优势
+- 代码整洁，易于阅读和二次开发
+- 支持导出并推理 ONNX 格式模型
+- 简单的单机训练
 
-## Hardware Support
+## 硬件支持
 
-We support various hardware devices, including but not limited to:
-- NVIDIA GPUs
-- Intel GPUs
-- AMD GPUs
-- Moore Thread MUSA GPUs
-- Huawei Ascend NPUs
+我们支持多种硬件设备，包括但不限于：
+- NVIDIA GPU
+- Intel GPU
+- AMD GPU
+- 摩尔线程 MUSA GPU
+- 华为昇腾 NPU
 
-Contributions for additional device support are welcome.
+欢迎贡献其他设备的支持。
 
-## Installation and Usage
+## 安装和使用
 
-1. Clone the repository:
+1. 克隆仓库：
    ```
    git clone -b dev https://github.com/uniartisan/TorchRWKV.git
    ```
 
-2. Install dependencies:
+2. 安装依赖：
    ```
    cd TorchRWKV
    pip install -r requirements.txt
    ```
 
-3. Download the RWKV6 model from [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main) and place the weights in the `weight` folder.
+3. 从 [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main) 下载 RWKV6 模型，并将权重放置在 `weight` 文件夹中。
 
-4. Modify the `MODEL_NAME` parameter in `main.py`.
+4. 修改 `main.py` 中的 `MODEL_NAME` 参数。
 
-5. Run the inference:
+5. 运行推理：
    ```
    python main.py
    ```
 
-## ONNX Export
+## ONNX 导出
 
-1. Modify parameters in `onnx_export.py` for your desired model.
-2. Run:
+1. 修改 `onnx_export.py` 中的参数以适配你想导出的模型。
+2. 运行：
    ```
    python onnx_export.py
    ```
-3. (Optional) Create a directory for simplified models:
+3. （可选）创建简化模型的目录：
    ```
    mkdir ONNX_Simplified
    ```
-4. (Optional) Simplify the model:
+4. （可选）简化模型：
    ```
    python simplify_large_onnx.py -m onnx/{model name}.onnx -o ONNX_Simplified/{model name}.onnx
    ```
-5. (Optional) Modify the model path in `onnx_infer.py` and run:
+5. （可选）修改 `onnx_infer.py` 中的模型路径并运行：
    ```
    python onnx_infer.py
    ```
 
-## Local Deployment
+## 本地部署
 
-1. Modify model configuration in `openai_api.py`.
-2. Start the backend:
+1. 修改 `openai_api.py` 中的模型配置。
+2. 启动后端：
    ```
    python openai_api.py
    ```
-3. Use any OpenAI API-compatible client with `http://127.0.0.1:8848` as the `API_URL`.
+3. 使用任何兼容 OpenAI API 的客户端，将 `http://127.0.0.1:8848` 作为 `API_URL`。
 
-## Note
+## 注意
 
-This framework currently supports only RWKV v6 models, specifically version x060.
+本框架目前仅支持 RWKV v6 模型，具体版本号为 x060。
 
-## Future Plans
+## 未来计划
 
-We plan to adapt this project for the AI Pro development board launched by Xunlong Orange Pi, enabling inference of the RWKV model on the Ascend ecosystem.
+我们计划基于本项目适配香橙派推出的 AI Pro 开发板，实现在昇腾的生态上推理国产大语言模型 RWKV。
 
+## 致谢
 
-## Acknowledgements
-
-Special thanks to:
+特别感谢：
 - Yang, S., & Zhang, Y. (2024). FLA: A Triton-Based Library for Hardware-Efficient Implementations of Linear Attention Mechanism (Version 0.0.1) [Computer software]. https://github.com/sustcsonglin/flash-linear-attention
 
 - [onnxsim_large_model](https://github.com/luchangli03/onnxsim_large_model.git)
 
-We have used modified implementations based on their work in different kernels.
+我们在不同的内核中使用了基于他们工作的修改实现。
 
-## Contributing
+## 贡献
 
-We welcome contributions from the community. Please feel free to submit PRs and raise Issues. Your input is valuable and helps improve the project for everyone.
+我们欢迎社区的贡献。请随时提交 PR 和提出 Issue。你的输入对改进项目很有价值，有助于为整个社区改进项目。
 
-****
-
-优化模型用到的仓库：
-
-## 贡献者 (Contributors)
+## 贡献者
 
 <!-- readme: collaborators,contributors -start -->
 <table>
@@ -150,9 +145,4 @@ We welcome contributions from the community. Please feel free to submit PRs and 
 
 ![QQ交流群](https://github.com/yuunnn-w/TorchRWKV/blob/main/asset/qrcode_1713112204738.jpg)
 
-****
-
-
-**We warmly invite everyone to contribute to the project by submitting PRs and raising Issues! Your input and contributions are highly valued and play a vital role in improving the project for the entire community. Let's collaborate and make this project even better together!**
-
-
+**感谢各位大佬做出的贡献！欢迎各路大神为本项目提PR和Issue！你们的贡献对本项目十分有价值！！！**
