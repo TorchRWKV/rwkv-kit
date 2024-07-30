@@ -2,8 +2,8 @@ import time
 import os
 import numpy as np
 import onnxruntime as ort
-from src.rwkv_tokenizer import RWKV_TOKENIZER #切换到速度更快的分词器
-from src.sampler import sample_logits_numpy as sample_logits
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER #切换到速度更快的分词器
+from torchrwkv.sampler import sample_logits_numpy as sample_logits
 
 if __name__ == '__main__':
     # Load the ONNX model
@@ -14,7 +14,7 @@ if __name__ == '__main__':
     # Load the tokenizer
     tokenizer = RWKV_TOKENIZER("./asset/rwkv_vocab_v20230424.txt")
     print("Done.")
-    
+
     # Set the initial string and parameters for inference
     initial_string = "Elon Musk has"
     batch_size = 3
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     token = token.transpose()
     # Start timing
     start_time = time.time()
-    
+
     # Inference loop
     for step in range(LENGTH_PER_TRIAL):
         token_sampled = sample_logits(out, TEMPERATURE, TOP_P)
@@ -51,16 +51,16 @@ if __name__ == '__main__':
         ort_outs = session.run(None, ort_inputs)
         # Sample logits
         out, state = ort_outs
-    
+
         # Clear the screen and print the results
         os.system('cls' if os.name == 'nt' else 'clear')
         decoded_sequences = tokenizer.decode(token.tolist())
         for i, seq in enumerate(decoded_sequences):
             print(f"Batch {i+1}: {seq}")
-    
+
     # End timing
     end_time = time.time()
-    
+
     # Calculate and print generation speed
     total_time = end_time - start_time
     tokens_generated = LENGTH_PER_TRIAL * batch_size

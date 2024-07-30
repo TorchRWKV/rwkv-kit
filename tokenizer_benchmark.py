@@ -1,5 +1,5 @@
-from src.old_tokenizer import RWKV_TOKENIZER
-from src.rwkv_tokenizer import RWKV_TOKENIZER as TRIE_TOKENIZER
+from torchrwkv.old_tokenizer import RWKV_TOKENIZER
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER as TRIE_TOKENIZER
 from icecream import ic
 import requests
 
@@ -37,7 +37,7 @@ def test_tokenizer2():
     tokenizer2.encode([text])
 
 if __name__ == '__main__':
-    
+
     test_equal()
     test_tokenizer1()
     test_tokenizer2()

@@ -1,3 +1,11 @@
+from einops import rearrange
+from .model_utils import RWKV_x060, RWKVConfig
+from . import JITMODULE, JITSCRIPT
+from typing import Tuple, Optional
+import numpy as np
+import torch.nn.functional as F
+import torch.nn as nn
+import torch
 import os
 import sys
 # 获取当前脚本文件的路径
@@ -6,30 +14,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, '..')
 # 将 'src' 目录的绝对路径添加到 Python 模块搜索路径中
 sys.path.append(os.path.abspath(src_dir))
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from typing import Tuple
-from .model_utils import RWKV_x060
-from einops import rearrange
-from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6, native_recurrent_rwkv6
-
-def __nop(ob):
-    return ob
 
 
-MyModule = nn.Module
-MyFunction = __nop
-try:
-    if os.environ["RWKV_JIT_ON"] == "1":
-        print("JIT ON")
-        MyModule = torch.jit.ScriptModule
-        MyFunction = torch.jit.script_method
-except:
-    print("JIT OFF")
 
-class RWKV_Block(MyModule):
+class RWKV_Block(JITMODULE):
     """
     RWKV模型的块结构。
 
@@ -38,13 +26,15 @@ class RWKV_Block(MyModule):
         n_embd (int): 嵌入维度。
         n_head (int): 头数。
     """
-    def __init__(self, block_w: dict, n_embd: int, n_head: int, args: dict, onnx_opset = 16):
+
+    def __init__(self, block_w: dict, n_embd: int, n_head: int, config: RWKVConfig, onnx_opset=16, kernel_function = None):
         super().__init__()
         self.n_embd = n_embd
         self.n_head = n_head
         self.head_size = n_embd // n_head
         self.onnx_opset = onnx_opset
-        self.args = args
+        self.config = config
+        self.kernel_function = kernel_function
 
         # 初始化层归一化
         if self.onnx_opset >= 17:
@@ -77,7 +67,8 @@ class RWKV_Block(MyModule):
         self.att_time_decay_w2 = nn.Parameter(block_w['att.time_decay_w2'])
         self.att_time_faaaa = nn.Parameter(block_w['att.time_faaaa'])
         self.att_receptance = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        self.att_receptance.weight = nn.Parameter(block_w['att.receptance.weight'])
+        self.att_receptance.weight = nn.Parameter(
+            block_w['att.receptance.weight'])
         self.att_key = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.att_key.weight = nn.Parameter(block_w['att.key.weight'])
         self.att_value = nn.Linear(self.n_embd, self.n_embd, bias=False)
@@ -88,11 +79,14 @@ class RWKV_Block(MyModule):
         self.att_gate.weight = nn.Parameter(block_w['att.gate.weight'])
 
         if self.onnx_opset >= 18:
-            self.att_group_norm = nn.GroupNorm(num_groups=n_head, num_channels=n_embd, eps=1e-5, affine=True)
-            self.att_group_norm.weight = nn.Parameter(block_w['att.ln_x.weight'])
+            self.att_group_norm = nn.GroupNorm(
+                num_groups=n_head, num_channels=n_embd, eps=1e-5, affine=True)
+            self.att_group_norm.weight = nn.Parameter(
+                block_w['att.ln_x.weight'])
             self.att_group_norm.bias = nn.Parameter(block_w['att.ln_x.bias'])
         else:
-            self.att_group_norm_weight = nn.Parameter(block_w['att.ln_x.weight'])
+            self.att_group_norm_weight = nn.Parameter(
+                block_w['att.ln_x.weight'])
             self.att_group_norm_bias = nn.Parameter(block_w['att.ln_x.bias'])
 
         # 初始化前馈参数
@@ -101,11 +95,12 @@ class RWKV_Block(MyModule):
         self.ffn_key = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.ffn_key.weight = nn.Parameter(block_w['ffn.key.weight'])
         self.ffn_receptance = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        self.ffn_receptance.weight = nn.Parameter(block_w['ffn.receptance.weight'])
+        self.ffn_receptance.weight = nn.Parameter(
+            block_w['ffn.receptance.weight'])
         self.ffn_value = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.ffn_value.weight = nn.Parameter(block_w['ffn.value.weight'])
 
-    @MyFunction
+    @JITSCRIPT
     def manual_layer_norm(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
         """
         人工层归一化函数
@@ -120,27 +115,27 @@ class RWKV_Block(MyModule):
         mean = x.mean(dim=-1, keepdim=True)
         var = x.var(dim=-1, keepdim=True, unbiased=False)
         x_normalized = (x - mean) / torch.sqrt(var + eps)
-        x_scaled = x_normalized * weight#.unsqueeze(-1) #这里会自动广播对齐
-        x_shifted = x_scaled + bias#.unsqueeze(-1)
+        x_scaled = x_normalized * weight  # .unsqueeze(-1) #这里会自动广播对齐
+        x_shifted = x_scaled + bias  # .unsqueeze(-1)
         return x_shifted
 
-    @MyFunction
+    @JITSCRIPT
     def manual_group_norm(self, x: torch.Tensor, num_groups: int, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
         """
         人工组归一化函数。
         Args:
-            x (torch.Tensor): 输入张量，形状为 [Batch, 2048]。（或者[Batch*L, 2048]）
+            x (torch.Tensor): 输入张量，形状为 [Batch, n_embd]。（或者[Batch*L, n_embd]）
             num_groups (int): 分组数，这里为 RWKV 的注意力头数。
-            weight (torch.Tensor): 归一化的权重张量，形状为 [2048]。
-            bias (torch.Tensor): 归一化的偏置张量，形状为 [2048]。
+            weight (torch.Tensor): 归一化的权重张量，形状为 [n_embd]。
+            bias (torch.Tensor): 归一化的偏置张量，形状为 [n_embd]。
             eps (float): 用于数值稳定性的小值，防止除以零。
         Returns:
             torch.Tensor: 经过人工组归一化后的张量，形状与输入的 x 相同。
         """
         N, C = x.shape
-        #if C % num_groups != 0:
-            #raise ValueError("num_channels must be divisible by num_groups")
-        #加上这个会有无法推断静态图的警告
+        # if C % num_groups != 0:
+        # raise ValueError("num_channels must be divisible by num_groups")
+        # 加上这个会有无法推断静态图的警告
         channels_per_group = C // num_groups
         # 重塑x以便于分组
         x = x.view(N, num_groups, channels_per_group)
@@ -153,21 +148,21 @@ class RWKV_Block(MyModule):
         x_shifted = x_scaled + bias
         return x_shifted
 
-    @MyFunction
+    @JITSCRIPT
     def channel_mixing(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
         """
         通道混合函数。
 
         Args:
-            x (torch.Tensor): 输入张量，形状为[Batch, 2048]。
-            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, 2048]。
+            x (torch.Tensor): 输入张量，形状为[Batch, n_embd]。
+            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, n_embd]。
             i (int): 时间索引。
 
         Returns:
             torch.Tensor: 混合后的张量，形状与输入的x相同。
         """
         i0 = (2 + self.head_size) * i
-        sx = state[:, i0] - x # 信息压缩到每一层的编号0位置
+        sx = state[:, i0] - x  # 信息压缩到每一层的编号0位置
         state[:, i0] = x
         xk = torch.addcmul(x, sx, self.ffn_time_maa_k)
         xr = torch.addcmul(x, sx, self.ffn_time_maa_r)
@@ -176,13 +171,13 @@ class RWKV_Block(MyModule):
         output = r * self.ffn_value(k)
         return output
 
-    @MyFunction
+    @JITSCRIPT
     def channel_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
         """
         并行通道混合函数
         Args:
-            x (torch.Tensor): 输入张量，形状为[Batch, L, 2048]。
-            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, 2048]。
+            x (torch.Tensor): 输入张量，形状为[Batch, L, n_embd]。
+            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, n_embd]。
             i (int): 时间索引。
         Returns:
             torch.Tensor: 混合后的张量，形状与输入的x相同。
@@ -197,12 +192,12 @@ class RWKV_Block(MyModule):
         # 和上方等同，使用矩阵运算计算差值
         sx_lerp[:, 1:] = x[:, :-1] - x[:, 1:]
 
-        state[:, i0] = x[:, -1] # 这里把state赋值为最后一个输入
+        state[:, i0] = x[:, -1]  # 这里把state赋值为最后一个输入
 
         xk = torch.addcmul(x, sx_lerp, self.ffn_time_maa_k)
         xr = torch.addcmul(x, sx_lerp, self.ffn_time_maa_r)
 
-        r = torch.sigmoid(self.ffn_receptance(xr)) # [Batch, L, 2048]
+        r = torch.sigmoid(self.ffn_receptance(xr))  # [Batch, L, n_embd]
         k = torch.relu(self.ffn_key(xk)).pow_(2)
 
         output = r * self.ffn_value(k)
@@ -213,8 +208,8 @@ class RWKV_Block(MyModule):
         时间混合函数。
 
         Args:
-            x (torch.Tensor): 输入张量，形状为[Batch, 2048]。
-            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, 2048]。
+            x (torch.Tensor): 输入张量，形状为[Batch, n_embd]。
+            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, n_embd]。
             i (int): 时间索引。
         Returns:
             torch.Tensor: 混合后的时间状态张量，形状与输入的state相同。
@@ -227,32 +222,35 @@ class RWKV_Block(MyModule):
             x = self.time_mixing_jit2(x, g)
         else:
             x = x.flatten(start_dim=1)
-            x = self.manual_group_norm(x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias) * g
+            x = self.manual_group_norm(
+                x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias) * g
             x = self.att_output(x)
         # 应用输出层并返回结果
         return x
 
-    @MyFunction
+    @JITSCRIPT
     def time_mixing_jit(self, x: torch.Tensor, state: torch.Tensor, i: int,
-                                    batch_size: int, H: int, S: int):
-        i1 = (2 + S) * i + 1 # i是block的编号
+                        batch_size: int, H: int, S: int):
+        i1 = (2 + S) * i + 1  # i是block的编号
 
         sx = state[:, i1] - x
-        state[:, i1] = x # 信息压缩到每一层的编号1位置
+        state[:, i1] = x  # 信息压缩到每一层的编号1位置
 
         xxx = torch.addcmul(x, sx, self.att_time_maa_x)
         xxx = torch.tanh(xxx @ self.att_time_maa_w1).view(batch_size, 5, 1, -1)
         xxx = torch.matmul(xxx, self.att_time_maa_w2).view(batch_size, 5, -1)
         mw, mk, mv, mr, mg = xxx.unbind(dim=1)
 
-        xw, xk, xv, xr, xg = torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x)
+        xw, xk, xv, xr, xg = torch.empty_like(x), torch.empty_like(
+            x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x)
         torch.addcmul(x, sx, self.att_time_maa_w + mw, out=xw)
         torch.addcmul(x, sx, self.att_time_maa_k + mk, out=xk)
         torch.addcmul(x, sx, self.att_time_maa_v + mv, out=xv)
         torch.addcmul(x, sx, self.att_time_maa_r + mr, out=xr)
         torch.addcmul(x, sx, self.att_time_maa_g + mg, out=xg)
 
-        w = (self.att_time_decay + (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
+        w = (self.att_time_decay +
+             (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
 
         # 计算注意力机制的权重
         w = -torch.exp(w.view(batch_size, H, S, 1))
@@ -261,7 +259,6 @@ class RWKV_Block(MyModule):
         k = self.att_key(xk).view(batch_size, H, S, 1)
         v = self.att_value(xv).view(batch_size, H, 1, S)
         g = self.silu(self.att_gate(xg))
-
 
         # 使用注意力机制更新状态
         s = state[:, (2+S)*i+2:(2+S)*(i+1), :].view(batch_size, H, S, S)
@@ -272,74 +269,86 @@ class RWKV_Block(MyModule):
         state[:, (2+S)*i+2:(2+S)*(i+1), :] = s.view(batch_size, S, -1)
         return x, state, g
 
-    @MyFunction
-    def time_mixing_jit2(self, x:torch.Tensor,g):
+    @JITSCRIPT
+    def time_mixing_jit2(self, x: torch.Tensor, g):
         return self.att_output(self.att_group_norm(x.flatten(start_dim=1)) * g)
 
-    def time_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def time_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool = False) -> torch.Tensor:
         """
         并行处理的时间混合函数。
         Args:
-            x (torch.Tensor): 输入张量，形状为[Batch, L, 2048]。
-            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, 2048]。
+            x (torch.Tensor): 输入张量，形状为[Batch, L, n_embd]。
+            state (torch.Tensor): 时间状态张量，形状为[Batch, State Size, n_embd]。
             i (int): 时间索引。
         Returns:
             torch.Tensor: 混合后的时间状态张量，形状与输入的state相同。
         """
         batch_size, L, H, S = x.size(0), x.size(1), self.n_head, self.head_size
-        r, w, k, v, g, state = self.time_mixing_parallel_jit1(x, state, i, batch_size, L, H, S)
-        # x, state, g = self.time_mixing_parallel_jit1(x, state, i, batch_size, L, H, S)
-        x, state = self.apply_time_mixxing_kernel(r, w, k, v, state, i, batch_size, L, H, S, backend=getattr(self.args, 'prefill_kenerl', 'torch'))
+        r, w, k, v, g, state = self.time_mixing_parallel_jit1(
+            x, state, i, batch_size, L, H, S, training)
+        x, state = self.apply_time_mixxing_kernel(
+            r, w, k, v, state, i, batch_size, L, H, S, backend=self.config.prefill_kernel)
         # 展平x并应用组归一化
         if self.onnx_opset >= 18:
             x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
         else:
             x = x.flatten(start_dim=2).view(batch_size * L, -1)
-            x = self.manual_group_norm(x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias).view(batch_size, L, -1) * g #因为组归一化强制要求Channel维度在第二个维度
+            x = self.manual_group_norm(x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias).view(
+                batch_size, L, -1) * g  # 因为组归一化强制要求Channel维度在第二个维度
             x = self.att_output(x)
 
         return x
 
-    @MyFunction
+    @JITSCRIPT
     def time_mixing_parallel_jit1(self, x: torch.Tensor, state: torch.Tensor, i: int,
-                                    batch_size: int, L: int, H: int, S: int):
+                                  batch_size: int, L: int, H: int, S: int, training: bool = False):
         i1 = (2 + S) * i + 1
         # 初始化结果张量
-        sx_lerp = torch.empty_like(x)
+        tensors = [torch.empty_like(x) for _ in range(7)]
+        sx_lerp, xw, xk, xv, xr, xg, xxx = tensors
 
         # 计算初始插值
         sx_lerp[:, 0] = state[:, i1] - x[:, 0]
         sx_lerp[:, 1:] = x[:, :-1] - x[:, 1:]
 
-        state[:, i1] = x[:, -1] # 这里把state赋值为最后一个输入
+        state[:, i1] = x[:, -1]  # 这里把state赋值为最后一个输入
 
-        xxx = x + sx_lerp * self.att_time_maa_x # torch.Size([B, L, 2048])
-        xxx = torch.tanh(xxx @ self.att_time_maa_w1).view(batch_size, L, 5, 1, -1) # att_time_maa_w1: [2048, 160]
-        xxx = torch.matmul(xxx, self.att_time_maa_w2).view(batch_size, L, 5, -1) # [Batch, L, 5, 2048]
+        xxx = x + sx_lerp * self.att_time_maa_x  # torch.Size([B, L, n_embd])
+        # att_time_maa_w1: [n_embd, 160]
+        xxx = torch.tanh(
+            xxx @ self.att_time_maa_w1).view(batch_size, L, 5, 1, -1)
+        xxx = torch.matmul(xxx, self.att_time_maa_w2).view(
+            batch_size, L, 5, -1)  # [Batch, L, 5, n_embd]
 
-        mw, mk, mv, mr, mg = xxx.unbind(dim=2) # [10, 100, 2048]
+        mw, mk, mv, mr, mg = xxx.unbind(dim=2)  # [10, 100, n_embd]
 
-        xw, xk, xv, xr, xg = torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x), torch.empty_like(x) # torch.Size([B, L, 2048])
-        torch.addcmul(x, sx_lerp, self.att_time_maa_w + mw, out=xw)
-        torch.addcmul(x, sx_lerp, self.att_time_maa_k + mk, out=xk)
-        torch.addcmul(x, sx_lerp, self.att_time_maa_v + mv, out=xv)
-        torch.addcmul(x, sx_lerp, self.att_time_maa_r + mr, out=xr)
-        torch.addcmul(x, sx_lerp, self.att_time_maa_g + mg, out=xg)
+        if not training:
+            torch.addcmul(x, sx_lerp, self.att_time_maa_w + mw, out=xw)
+            torch.addcmul(x, sx_lerp, self.att_time_maa_k + mk, out=xk)
+            torch.addcmul(x, sx_lerp, self.att_time_maa_v + mv, out=xv)
+            torch.addcmul(x, sx_lerp, self.att_time_maa_r + mr, out=xr)
+            torch.addcmul(x, sx_lerp, self.att_time_maa_g + mg, out=xg)
+        else:
+            xw = x + sx_lerp * (self.att_time_maa_w + mw)
+            xk = x + sx_lerp * (self.att_time_maa_k + mk)
+            xv = x + sx_lerp * (self.att_time_maa_v + mv)
+            xr = x + sx_lerp * (self.att_time_maa_r + mr)
+            xg = x + sx_lerp * (self.att_time_maa_g + mg)
 
-        w = (self.att_time_decay + (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
+        w = (self.att_time_decay +
+             (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
         w = -torch.exp(w.view(batch_size, L, H, S, 1))
 
         r = self.att_receptance(xr)
         k = self.att_key(xk)
         v = self.att_value(xv)
-        g = self.silu(self.att_gate(xg)) # [10, 100, 2048]
-
+        g = self.silu(self.att_gate(xg))  # [10, 100, n_embd]
 
         return r, w, k, v, g, state
 
     def apply_time_mixxing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
-                                v: torch.Tensor, state: torch.Tensor, i: int,
-                                    batch_size: int, L: int, H: int, S: int, backend: str="torch"):
+                                  v: torch.Tensor, state: torch.Tensor, i: int,
+                                  batch_size: int, L: int, H: int, S: int, backend: str = "torch"):
         """
         Apply the time mixing kernel operation with support for multiple backend implementations.
 
@@ -376,7 +385,6 @@ class RWKV_Block(MyModule):
                 state (torch.Tensor): Updated state tensor
         """
         s = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S)
-        assert backend in ["torch", "triton", "triton-chunk", "manual-torch"]
         # we dont want to support cuda, since it is only supported by nvidia and AMD
         if backend != "torch":
             u = self.att_time_faaaa.view(self.n_head, self.head_size)
@@ -384,40 +392,39 @@ class RWKV_Block(MyModule):
             k = rearrange(k, 'b l (h d) -> b h l d', h=H)
             v = rearrange(v, 'b l (h d) -> b h l d', h=H)
             w = rearrange(w.squeeze(-1), 'b l h d -> b h l d', h=H)
-            s = s.transpose(2, 3)
 
-            # Choose the appropriate function based on the backend
-            if backend == "manual-torch":
-                kernel_func = native_recurrent_rwkv6
-            elif backend == "triton":
-                kernel_func = fused_recurrent_rwkv6
-            else:  # backend == "triton-chunk"
-                kernel_func = chunk_rwkv6
             # Apply the chosen kernel function
-            o, state_layer = kernel_func(r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
+            o, state_layer = self.kernel_function(
+                r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
             x = rearrange(o, 'b h l d -> b l (h d)')
-            state[:, (2+S)*i+2:(2+S)*(i+1)] = state_layer.view(batch_size, S, -1)
+            state[:, (2+S)*i+2:(2+S)*(i+1)
+                  ] = state_layer.view(batch_size, S, -1)
 
         else:
-            x, state_layer = self.native_torch_time_mixing_kernel(r, w, k, v, s, batch_size, L, H, S)
-            state[:, (2+S)*i+2:(2+S)*(i+1)] = state_layer.view(batch_size, S, -1)
+            x, state_layer = self.native_torch_time_mixing_kernel(
+                r, w, k, v, s, batch_size, L, H, S)
+            state[:, (2+S)*i+2:(2+S)*(i+1)
+                  ] = state_layer.view(batch_size, S, -1)
         return x, state
 
-    @MyFunction
+    @JITSCRIPT
     def native_torch_time_mixing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
-                                       v: torch.Tensor, s: torch.Tensor, batch_size: int,
-                                       L: int, H: int, S: int):
-        a = k.view(batch_size, L, H, S, 1) @ v.view(batch_size, L, H, 1, S) # a: [batch_size, L, H, S, S]
+                                        v: torch.Tensor, s: torch.Tensor, batch_size: int,
+                                        L: int, H: int, S: int):
+        a = k.view(batch_size, L, H, S, 1) @ v.view(batch_size,
+                                                    L, H, 1, S)  # a: [batch_size, L, H, S, S]
         w = torch.exp(w)
-        state_s = torch.zeros(batch_size, L+1, H, S, S, dtype=s.dtype, device=s.device)
+        state_s = torch.zeros(batch_size, L+1, H, S, S,
+                              dtype=s.dtype, device=s.device)
         state_s[:, 0] = s
         for l in range(L):
             state_s[:, l+1] = torch.addcmul(a[:, l], w[:, l], state_s[:, l])
-        x = r.view(batch_size, L, H, 1, S) @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
+        x = r.view(batch_size, L, H, 1,
+                   S) @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
         return x, state_s[:, -1].view(batch_size, S, -1)
 
-    @MyFunction
-    def time_mixing_parallel_jit2(self, x: torch.Tensor, g: torch.Tensor, batch_size: int, L:int):
+    @JITSCRIPT
+    def time_mixing_parallel_jit2(self, x: torch.Tensor, g: torch.Tensor, batch_size: int, L: int):
         return self.att_output(self.att_group_norm(x.flatten(start_dim=2).view(batch_size * L, -1)).view(batch_size, L, -1) * g)
 
     @torch.no_grad()
@@ -435,11 +442,13 @@ class RWKV_Block(MyModule):
             x = x + self.time_mixing(self.ln1(x), state, i)
             x = x + self.channel_mixing(self.ln2(x), state, i)
         else:
-            x = x + self.time_mixing(self.manual_layer_norm(x, self.ln1_weight, self.ln1_bias, 1e-5), state, i)
-            x = x + self.channel_mixing(self.manual_layer_norm(x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
+            x = x + self.time_mixing(self.manual_layer_norm(x,
+                                     self.ln1_weight, self.ln1_bias, 1e-5), state, i)
+            x = x + self.channel_mixing(self.manual_layer_norm(x,
+                                        self.ln2_weight, self.ln2_bias, 1e-5), state, i)
         return x
 
-    def forward_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def forward_prefill(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool = False) -> torch.Tensor:
         """
         模型的并行前向传播。
         Args:
@@ -450,79 +459,91 @@ class RWKV_Block(MyModule):
             torch.Tensor: 前向传播结果张量，形状与输入的x相同。
         """
         if self.onnx_opset >= 17:
-            x = x + self.time_mixing_parallel(self.ln1(x), state, i)
+            x = x + self.time_mixing_parallel(self.ln1(x), state, i, training)
             x = x + self.channel_mixing_parallel(self.ln2(x), state, i)
         else:
-            x = x + self.time_mixing_parallel(self.manual_layer_norm(x, self.ln1_weight, self.ln1_bias, 1e-5), state, i)
-            x = x + self.channel_mixing_parallel(self.manual_layer_norm(x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
+            x = x + self.time_mixing_parallel(self.manual_layer_norm(
+                x, self.ln1_weight, self.ln1_bias, 1e-5), state, i, training)
+            x = x + self.channel_mixing_parallel(self.manual_layer_norm(
+                x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
         return x
 
-class RWKV_RNN(MyModule):
+
+class RWKV6(JITMODULE):
     """
     RWKV模型的RNN结构。
 
     Args:
         args (dict): 参数字典。
     """
-    def __init__(self, args: dict):
+
+    def __init__(self, config: RWKVConfig):
         super().__init__()
-        self.args = args
+        self.config = config
         try:
-            self.onnx_opset = int(self.args['onnx_opset'])
+            self.onnx_opset_version = int(self.config.onnx_opset_version)
         except:
-            self.onnx_opset = 16 #默认是最低的，op17版本才支持LayerNorm算子，op18版本才支持GroupNorm算子
-        print('onnx opset ', self.onnx_opset)
-        self.dataformat = self.args.get('dataformat', 'fp32')
-        assert self.dataformat in ['fp32', 'fp16', 'bf16']
+            self.onnx_opset_version = 16  # 默认是最低的，op17版本才支持LayerNorm算子，op18版本才支持GroupNorm算子
+
+        self.data_format = self.config.data_format
+        assert self.data_format in ['fp32', 'fp16', 'bf16']
+        assert self.config.prefill_kernel in ["torch", "triton", "triton-chunk", "manual-torch"]
+        if self.config.prefill_kernel == "manual-torch":
+            from fla.ops.rwkv6.recurrent_naive import native_recurrent_rwkv6
+            self.kernel_func = native_recurrent_rwkv6
+        elif self.config.prefill_kernel == "triton":
+            from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
+            self.kernel_func = fused_recurrent_rwkv6
+        elif  self.config.prefill_kernel == "triton-chunk":
+            from fla.ops.rwkv6 import chunk_rwkv6
+            self.kernel_func = chunk_rwkv6
+        else:
+            self.kernel_func = None
+
 
         # 加载权重
-        if 'init_model' in self.args and self.args['init_model'] == True:
+        if self.config.init_model:
             self.init_params()
         else:
             self.load_params()
 
         self.eval()
+        self._convert_dataformat()
+        self.to(self.config.device)
 
-
+    def _convert_dataformat(self):
+        if self.data_format == 'fp16':
+            self.half()
+        elif self.data_format == 'fp32':
+            self.float()
+        elif self.data_format == 'bf16':
+            self.bfloat16()
 
     def init_params(self):
-        # 检查参数是否都存在
-        assert 'n_embd' in self.args
-        assert 'n_layer' in self.args
-        assert 'vocab_size' in self.args
-        if 'head_size_a' not in self.args:
-            self.args['head_size_a'] = 64
-        if 'head_size_divisor' not in self.args:
-            self.args['head_size_divisor'] = 8
-
-        model_init = RWKV_x060(self.args)
+        model_init = RWKV_x060(self.config)
         # 使用初始化的权重加载模型
         self.load_params(load_from_file=False, w=model_init.state_dict())
         del model_init
         import gc
         gc.collect()
 
-
     def load_params(self, load_from_file: bool = True, w: dict = None):
         if load_from_file:
-            if not self.args['MODEL_NAME'].endswith('.pth'):
-                self.args['MODEL_NAME'] += '.pth'
-            w = torch.load(self.args['MODEL_NAME'], map_location="cpu")
+            if not self.config.model_path.endswith('.pth'):
+                self.config.model_path += '.pth'
+            w = torch.load(self.config.model_path, map_location="cpu")
         else:
             assert w is not None
 
         # 将所有权重转换为float32
         self.num_layer = 0
         for k in w.keys():
-            if self.dataformat == 'fp32':
-                w[k] = w[k].float()
-            elif self.dataformat == 'fp16':
-                w[k] = w[k].half()
-            elif self.dataformat == 'bf16':
-                w[k] = w[k].bfloat16()
-            if '.time_' in k: w[k] = w[k].squeeze()
-            if '.time_faaaa' in k: w[k] = w[k].unsqueeze(-1)
-            if "blocks" in k: self.num_layer = max(self.num_layer, int(k.split(".")[1]))
+            if '.time_' in k:
+                w[k] = w[k].squeeze()
+            if '.time_faaaa' in k:
+                w[k] = w[k].unsqueeze(-1)
+            if "blocks" in k:
+                self.num_layer = max(self.num_layer, int(k.split(".")[1]))
         self.num_layer += 1
 
         self.n_head = w['blocks.0.att.time_faaaa'].shape[0]
@@ -530,12 +551,10 @@ class RWKV_RNN(MyModule):
         self.head_size = self.n_embd // self.n_head
         self.state_size = [self.num_layer * (2 + self.head_size), self.n_embd]
 
-        print(f"state_size:{self.state_size}") # 这里打印状态的形状
-
         # 初始化模型参数
         self.emb = nn.Embedding.from_pretrained(w['emb.weight'], freeze=True)
 
-        if self.onnx_opset >= 17:
+        if self.onnx_opset_version >= 17:
             self.ln0 = nn.LayerNorm(self.n_embd)
             self.ln0.weight = nn.Parameter(w['blocks.0.ln0.weight'])
             self.ln0.bias = nn.Parameter(w['blocks.0.ln0.bias'])
@@ -547,10 +566,12 @@ class RWKV_RNN(MyModule):
 
         for i in range(self.num_layer):
             # 提取当前块的权重
-            block_w = {k[len(f'blocks.{i}.'):]: v for k, v in w.items() if f'blocks.{i}.' in k}
-            self.blocks.append(RWKV_Block(block_w, self.n_embd, self.n_head, self.args, self.onnx_opset))
+            block_w = {k[len(f'blocks.{i}.'):]: v for k,
+                       v in w.items() if f'blocks.{i}.' in k}
+            self.blocks.append(RWKV_Block(
+                block_w, self.n_embd, self.n_head, self.config, self.onnx_opset_version, self.kernel_func))
 
-        if self.onnx_opset >= 17:
+        if self.onnx_opset_version >= 17:
             self.ln_out = nn.LayerNorm(self.n_embd)
             self.ln_out.weight = nn.Parameter(w['ln_out.weight'])
             self.ln_out.bias = nn.Parameter(w['ln_out.bias'])
@@ -558,10 +579,10 @@ class RWKV_RNN(MyModule):
             self.ln_out_weight = nn.Parameter(w['ln_out.weight'])
             self.ln_out_bias = nn.Parameter(w['ln_out.bias'])
 
-        self.head = nn.Linear(self.n_embd, self.args['vocab_size'], bias=False)
+        self.head = nn.Linear(self.n_embd, self.config.vocab_size, bias=False)
         self.head.weight = nn.Parameter(w['head.weight'])
 
-    @MyFunction
+    @JITSCRIPT
     def manual_layer_norm(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
         """
         人工层归一化函数
@@ -580,8 +601,21 @@ class RWKV_RNN(MyModule):
         x_shifted = x_scaled + bias
         return x_shifted
 
-    @torch.no_grad()
-    def forward(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    @torch.no_grad
+    def forward(self, token: torch.Tensor, state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        if state is None:
+            state = self.init_state(token.size(0))
+        if token.dim() == 1:
+            out, state = self.forward_autoregressive(token, state)
+        elif self.config.chunk_size == 0:
+            out, state = self.forward_prefill(token, state)
+            out = out[:, -1]
+        else:
+            out, state = self.forward_prefill_chunks(token, state, self.config.chunk_size)
+            out = out[:, -1]
+        return out, state
+
+    def forward_autoregressive(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         模型的前向传播。
         Args:
@@ -590,7 +624,7 @@ class RWKV_RNN(MyModule):
         Returns:
             torch.Tensor: 模型输出。
         """
-        if self.onnx_opset >= 17:
+        if self.onnx_opset_version >= 17:
             x = self.forward_jit1(token)
         else:
             x = self.emb(token)
@@ -599,14 +633,15 @@ class RWKV_RNN(MyModule):
         for i, block in enumerate(self.blocks):
             x = block(x, state, i)
 
-        if self.onnx_opset >= 17:
+        if self.onnx_opset_version >= 17:
             x = self.forward_jit2(x)
         else:
-            x = self.manual_layer_norm(x, self.ln_out_weight, self.ln_out_bias, 1e-5)
+            x = self.manual_layer_norm(
+                x, self.ln_out_weight, self.ln_out_bias, 1e-5)
             x = self.head(x)
         return x, state
 
-    def forward_parallel(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_prefill(self, token: torch.Tensor, state: torch.Tensor, training: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         模型的并行前向传播。
         Args:
@@ -615,31 +650,32 @@ class RWKV_RNN(MyModule):
         Returns:
             torch.Tensor: 模型输出。
         """
-        if self.onnx_opset >= 17:
+        if self.onnx_opset_version >= 17:
             x = self.forward_jit1(token)
         else:
             x = self.emb(token)
             x = self.manual_layer_norm(x, self.ln0_weight, self.ln0_bias, 1e-5)
         # 开始循环推理RWKV Block
         for i, block in enumerate(self.blocks):
-            x = block.forward_parallel(x, state, i)
-        if self.onnx_opset >= 17:
+            x = block.forward_prefill(x, state, i, training)
+        if self.onnx_opset_version >= 17:
             x = self.forward_jit2(x)
         else:
-            x = self.manual_layer_norm(x, self.ln_out_weight, self.ln_out_bias, 1e-5)
+            x = self.manual_layer_norm(
+                x, self.ln_out_weight, self.ln_out_bias, 1e-5)
             x = self.head(x)
         return x, state
 
-    @MyFunction
+    @JITSCRIPT
     def forward_jit1(self, token: torch.Tensor) -> torch.Tensor:
         return self.ln0(self.emb(token))
 
-    @MyFunction
+    @JITSCRIPT
     def forward_jit2(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(self.ln_out(x))
 
     @torch.no_grad()
-    def forward_parallel_slices(self, token: torch.Tensor, state: torch.Tensor, slice_len: int = 64) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_prefill_chunks(self, token: torch.Tensor, state: torch.Tensor, slice_len: int = 64) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         模型的分段并行前向传播，减少显存/内存使用。
         Args:
@@ -653,7 +689,7 @@ class RWKV_RNN(MyModule):
             start = i*slice_len
             end = min((i+1)*slice_len, data_len)
             token_i = token[:, start:end]
-            token_out, state = self.forward_parallel(token_i, state)
+            token_out, state = self.forward_prefill(token_i, state)
 
         return token_out, state
 
@@ -669,22 +705,22 @@ class RWKV_RNN(MyModule):
         state = torch.zeros(batch_size, self.state_size[0], self.state_size[1])
 
         # 这里把训练好的state加载进去
-        if 'STATE_NAME' in self.args and self.args['STATE_NAME'] != '':
-            STATE = torch.load(self.args['STATE_NAME'].replace(
+        if self.config.state_path != '':
+            STATE = torch.load(self.config.state_path.replace(
                 ".pth", "")+'.pth', map_location=torch.device("cpu"))
             head_size = self.head_size
             for i, (key, value) in enumerate(STATE.items()):
                 state[:, ((2 + head_size)*i + 2):((2 + head_size)*(i + 1)),
                       :] = value.contiguous().permute(0, 2, 1).reshape(head_size, -1)
 
-        if self.dataformat == 'fp16':
+        if self.data_format == 'fp16':
             state = state.half()
-        elif self.dataformat == 'bf16':
+        elif self.data_format == 'bf16':
             state = state.bfloat16()
-        elif self.dataformat == 'fp32':
+        elif self.data_format == 'fp32':
             state = state.float()
 
-        return state
+        return state.to(self.config.device)
 
     def save_state(self, state: torch.Tensor, filename: str, bf16=True):
         """
@@ -703,10 +739,12 @@ class RWKV_RNN(MyModule):
         for i in range(self.num_layer):
             start = (2 + head_size) * i + 2
             end = (2 + head_size) * (i + 1)
-            layer_state = state[:, start:end, :].detach()  # 使用 detach() 创建一个新的张量
+            # 使用 detach() 创建一个新的张量
+            layer_state = state[:, start:end, :].detach()
             batch_size, _, _ = layer_state.size()
-            assert batch_size == 1, "保存状态时批次大小必须为1, 其他时候未验证" # 我甚至不知道怎么写 :(
-            STATE[f'blocks.{i}.att.time_state'] = layer_state.contiguous().view(n_head, head_size, head_size).permute(0, 1, 2)
+            assert batch_size == 1, "保存状态时批次大小必须为1, 其他时候未验证"  # 我甚至不知道怎么写 :(
+            STATE[f'blocks.{i}.att.time_state'] = layer_state.contiguous().view(
+                n_head, head_size, head_size).permute(0, 1, 2)
 
         if bf16 == True:
             for key in STATE.keys():
@@ -730,9 +768,10 @@ class RWKV_RNN(MyModule):
 
         # 保存 RWKV_RNN 的权重
         for name, param in self.named_parameters():
-            if self.onnx_opset >= 17:
+            if self.onnx_opset_version >= 17:
                 if 'ln0' in name:
-                    state_dict[name.replace('ln0.', 'blocks.0.ln0.')] = param.data
+                    state_dict[name.replace(
+                        'ln0.', 'blocks.0.ln0.')] = param.data
                 if 'blocks' not in name:
                     state_dict[name] = param.data
             else:
@@ -751,12 +790,12 @@ class RWKV_RNN(MyModule):
         for i, block in enumerate(self.blocks):
             for name, param in block.named_parameters():
                 # 根据 ONNX opset 版本对权重名称进行调整
-                if self.onnx_opset >= 18:
+                if self.onnx_opset_version >= 18:
                     if name == 'att_group_norm.weight':
                         name = 'att.ln_x.weight'
                     elif name == 'att_group_norm.bias':
                         name = 'att.ln_x.bias'
-                elif self.onnx_opset >= 17:
+                elif self.onnx_opset_version >= 17:
                     if name == 'ln1.weight':
                         name = 'ln1.weight'
                     elif name == 'ln1.bias':
@@ -802,15 +841,17 @@ class RWKV_RNN(MyModule):
 
                 state_dict[f'blocks.{i}.{name}'] = param_data
 
-
         for name in state_dict:
             if '.time_maa_w1' in name or '.time_decay_w1' in name or '.time_decay_w2' in name or 'att.time_faaaa' in name:
-                state_dict[name] = state_dict[name].view(state_dict[name].shape[0], state_dict[name].shape[1])
+                state_dict[name] = state_dict[name].view(
+                    state_dict[name].shape[0], state_dict[name].shape[1])
             elif '.time_maa_w2' in name:
-                state_dict[name] = state_dict[name].view(state_dict[name].shape[0], state_dict[name].shape[1], state_dict[name].shape[2])
+                state_dict[name] = state_dict[name].view(
+                    state_dict[name].shape[0], state_dict[name].shape[1], state_dict[name].shape[2])
             elif 'att.time_maa_x' in name or 'att.time_maa_w' in name or 'att.time_maa_k' in name or 'att.time_maa_v' in name or 'att.time_maa_r' in name or 'att.time_maa_g' in name \
-                or 'ffn.time_maa_k' in name or 'ffn.time_maa_r' in name or 'time_decay' in name:
-                state_dict[name] = state_dict[name].view(1, 1, state_dict[name].shape[0])
+                    or 'ffn.time_maa_k' in name or 'ffn.time_maa_r' in name or 'time_decay' in name:
+                state_dict[name] = state_dict[name].view(
+                    1, 1, state_dict[name].shape[0])
             else:
                 state_dict[name] = state_dict[name]
 

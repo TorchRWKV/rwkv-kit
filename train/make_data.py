@@ -40,9 +40,9 @@ where the data is repeated 3 times (each time with different shuffle)
 # MMapIndexedDatasetBuilder
 ########################################################################################################
 
-from src.rwkv_tokenizer import RWKV_TOKENIZER
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
 tokenizer = RWKV_TOKENIZER("tokenizer/rwkv_vocab_v20230424.txt")
-from src.binidx import MMapIndexedDataset
+from torchrwkv.binidx import MMapIndexedDataset
 def index_file_path(prefix_path):
     return prefix_path + ".idx"
 def data_file_path(prefix_path):

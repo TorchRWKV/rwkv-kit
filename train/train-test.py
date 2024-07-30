@@ -11,9 +11,9 @@ import json
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
-from src.rwkv_tokenizer import RWKV_TOKENIZER
-from src.model_utils import device_checker
-from src.model import RWKV_RNN
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+from torchrwkv.model_utils import device_checker
+from torchrwkv.rwkv6 import RWKV6
 import torch
 
 
@@ -60,7 +60,7 @@ print(f"Device: {device}")
 device = torch.device(args['device'])
 # 加载模型和分词器
 print("Loading model and tokenizer...")
-model = RWKV_RNN(args).to(device)
+model = RWKV6(args).to(device)
 tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
 print("Done.")
 

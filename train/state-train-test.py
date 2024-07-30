@@ -11,9 +11,8 @@ import json
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
-from src.rwkv_tokenizer import RWKV_TOKENIZER
-from src.model_utils import device_checker, device_specific_empty_cache
-from src.model import RWKV_RNN
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+from torchrwkv.rwkv6 import RWKV6
 import torch
 from torch.optim.lr_scheduler import LinearLR
 
@@ -41,27 +40,19 @@ class TextDataset(Dataset):
         y = encoded_data[1:].unsqueeze(0)
         return x, y
 
-
+from torchrwkv.model_utils import RWKVConfig
 # 初始化模型参数
-args = {
-    # 模型文件的名字，pth结尾的权重文件。
-    'MODEL_NAME': './weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth',
-    'vocab_size': 65536  # 词表大小，不要乱改
-    , 'device': "cpu"    # ,'device': "cuda"
-    , 'onnx_opset': 16,
-    'dataformat': 'bf16',
-    'STATE_NAME': 'weight/rwkv-trained-latest.pth', # 如果不加载state权重，请置为''
-}
-args = device_checker(args)
-device = args['device']
-assert device in ['cpu', 'cuda', 'musa', 'npu', 'xpu']
-print(f"Device: {device}")
+config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
+                        state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
+                        prefill_kernel="triton-chunk",)
 
 
-device = torch.device(args['device'])
 # 加载模型和分词器
 print("Loading model and tokenizer...")
-model = RWKV_RNN(args).to(device)
+model = RWKV6(config=config)
+
+
+device = torch.device(config.device)
 tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
 print("Done.")
 
@@ -75,7 +66,7 @@ dataset = TextDataset(file_path, tokenizer)
 dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=4)
 accumulation_steps = 5  # 每 10 步更新一次参数
 epochs = 1
-initial_state = model.init_state(batch_size=1).detach().to(device)
+initial_state = model.init_state(batch_size=1).detach()
 initial_state.requires_grad = True
 # optimizer = torch.optim.Adam([initial_state])
 lr_init = 1
@@ -85,7 +76,7 @@ total_steps =  len(dataloader) * epochs
 optimizer = torch.optim.AdamW([initial_state], lr=lr_init)
 scheduler = LinearLR(optimizer, start_factor=lr_init, end_factor=lr_final, total_iters=warmup_steps)
 
-model = torch.compile(model)
+
 # with torch.autograd.set_detect_anomaly(True): # 检测梯度异常
 for epoch in range(epochs):
     accumulated_loss = 0
@@ -101,23 +92,25 @@ for epoch in range(epochs):
             total_length += data_len
             prev_scale_factor = prev_total_length/total_length
             accumulated_loss *= prev_scale_factor
+            loss = 0
             # 根据序列的总长度对梯度进行规范化
             param = initial_state
             if param.grad is not None:
                 param.grad *= prev_scale_factor
-            # FIXME: 使用类自带的 forward_parallel_slices 方法
+
             for i in range((data_len-2)//slice_len+1):
                 start = i*slice_len
                 end = min((i+1)*slice_len, data_len)
                 x_i = x[:, start:end]
                 y_i = y[0, start:end]
                 current_slice_len = x_i.shape[1]
-                token_out, state_new = model.forward_parallel(x_i, state)
-                state = state_new.detach()  # 使用 detach() 截断梯度传播
-                loss = criterion(token_out[0], y_i)
-                loss_weight = loss * (current_slice_len / total_length)
+                token_out, state = model.forward_prefill(x_i, state)
+                loss_i = criterion(token_out[0], y_i)
+                loss_weight = loss_i * (current_slice_len / total_length)
+                loss += loss_weight
                 accumulated_loss += loss_weight.item()
-                loss_weight.backward()
+
+            loss.backward()
 
             prev_total_length = total_length
 
@@ -129,7 +122,6 @@ for epoch in range(epochs):
                     scheduler.step()
                 total_length = 0
                 prev_total_length = 0
-                device_specific_empty_cache(args)
                 model.save_state(initial_state, "./weight/rwkv-trained-latest.pth")
             tbar.set_postfix(avg_loss=accumulated_loss, lr=optimizer.param_groups[0]['lr'])
 

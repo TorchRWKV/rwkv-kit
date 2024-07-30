@@ -2,8 +2,8 @@ import argparse
 import os
 import onnx
 from onnxsim import simplify
-from src.onnx_utils import set_onnx_input_shape
-from src.compress_model import SIZE_1MB, compress_onnx_model, uncompress_onnx_model
+from torchrwkv.onnx_utils import set_onnx_input_shape
+from torchrwkv.compress_model import SIZE_1MB, compress_onnx_model, uncompress_onnx_model
 
 
 def simplify_large_onnx(args):
@@ -45,8 +45,8 @@ def simplify_large_onnx(args):
     onnx.save(onnx_model, out_model_path, save_as_external_data=save_extern)
 
     del onnx_model, removed_inits
-    import gc 
-    gc.collect() 
+    import gc
+    gc.collect()
     quantize_onnx(args, out_model_path)
 
 
@@ -97,7 +97,7 @@ def quantize_onnx(args, in_model_path):
         print(f"Quantized model saved to {model_quantized_path}")
     else:
         print("No quantization performed. Pass...")
-        
+
 
 
 if __name__ == "__main__":

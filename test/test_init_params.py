@@ -8,10 +8,10 @@ src_dir = os.path.join(current_dir, '..')
 # 将 'src' 目录的绝对路径添加到 Python 模块搜索路径中
 sys.path.append(os.path.abspath(src_dir))
 import torch
-from src.model import RWKV_RNN
+from torchrwkv.rwkv6 import RWKV6
 
-from src.sampler import sample_logits
-from src.rwkv_tokenizer import RWKV_TOKENIZER
+from torchrwkv.sampler import sample_logits
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
 
 
 args = {
@@ -28,4 +28,4 @@ args = {
     'head_size_a' : 64, # don't change,
     'head_size_divisor' : 8 # don't change,
 }
-model = RWKV_RNN(args)
+model = RWKV6(args)

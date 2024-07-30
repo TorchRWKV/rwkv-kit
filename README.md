@@ -37,12 +37,103 @@ Contributions for additional device support are welcome.
 
 3. Download the RWKV6 model from [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main) and place the weights in the `weight` folder.
 
-4. Modify the `MODEL_NAME` parameter in `main.py`.
+Benchmark: (we use native torch to autoregress)
+```
+    import time
+    import os
+    import torch
+    from torchrwkv.rwkv6 import RWKV6
+    from torchrwkv.model_utils import RWKVConfig
+    from torchrwkv.sampler import sample_logits
+    from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+    config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
+                        state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
+                        prefill_kernel="triton-chunk",)
+    model = RWKV6(config=config)
+    # Please do not use torch.compile, since JIT is on by default
+    # Also, this will reduce the accuracy of the model by unknown reasons
+    # model = torch.compile(model)
+    tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
+    initial_string = """hello"""
+    batch_size = 128
+    TEMPERATURE = 1.0
+    TOP_P = 0.0
+    LENGTH_PER_TRIAL = 100
+    state = model.init_state(batch_size)
 
-5. Run the inference:
-   ```
-   python main.py
-   ```
+
+    encoded_input = tokenizer.encode([initial_string] * batch_size)
+
+    token = torch.tensor(encoded_input).long().to(config.device)  #
+    t1 = time.time()
+    state = None
+    out, state = model.forward(token, state)
+    t2 = time.time()
+    print(f"Time: {t2 - t1}")
+
+    start_time = time.time()
+
+    for step in range(LENGTH_PER_TRIAL):
+        token_sampled = sample_logits(out, TEMPERATURE, TOP_P)
+        out, state = model.forward(token_sampled, state)
+
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    tokens_generated = LENGTH_PER_TRIAL * batch_size
+    speed = tokens_generated / total_time
+    print(f"\nTotal time: {total_time:.2f} seconds")
+    print(f"Tokens generated: {tokens_generated}")
+    print(f"Token generation speed: {speed:.2f} tokens/second")
+
+```
+
+
+| Method | Batch Size | Token Length | Prefill Time (ms) | Token Generation Speed (tokens/second) | Notes |
+|--------|------------|--------------|-------------------|---------------------------------------|-------|
+| triton-chunk | 1 | 1024 | 132.50 | 42.83 | Suitable for inference and state fine-tuning, better speed for long tokens |
+| triton | 1 | 1024 | 121.79 | - | Suitable for inference and training, high accuracy |
+| torch | 1 | 1024 | 595.22 | - | Suitable for inference on devices where Triton is unavailable |
+| manual-torch | 1 | 1024 | 2468.00 | - | Suitable for training on devices where Triton is unavailable, high accuracy |
+| - | 1 | - | - | 48.42 | Excluding prefill |
+| - | 64 | - | - | 1266.77 | Excluding prefill |
+| - | 128 | - | - | 1875.03 | Excluding prefill |
+
+Notes:
+- "-" indicates data not provided or not applicable.
+- For batch size 1, only the triton-chunk method provides token generation speed (including prefill).
+- For other batch sizes, token generation speeds do not include prefill time.
+- Tested on WSL2, PyTorch 2.5, Intel Arc A770.
+
+For normal use:
+```
+    initial_string = """User: 你好！ 请问你是什么模型？"""
+    batch_size = 2
+    state = None
+    TEMPERATURE = 1.0
+    TOP_P = 0.0
+    LENGTH_PER_TRIAL = 100
+
+
+    encoded_input = tokenizer.encode([initial_string] * batch_size)
+
+    token = torch.tensor(encoded_input).long().to(config.device)
+    token_all = torch.tensor(encoded_input).long().to(config.device)
+
+
+    for step in range(LENGTH_PER_TRIAL):
+        out, state = model.forward(token, state)
+        token = sample_logits(out, TEMPERATURE, TOP_P)
+        token_all = torch.cat((token_all, token.unsqueeze(1)), 1)
+
+        os.system('cls' if os.name == 'nt' else 'clear')
+        decoded_sequences = tokenizer.decode(token_all.cpu().tolist())
+        for i, seq in enumerate(decoded_sequences):
+            print(f"Batch {i+1}: {seq}")
+
+```
+
+
 
 ## ONNX Export
 
@@ -148,7 +239,7 @@ We welcome contributions from the community. Please feel free to submit PRs and 
 ****
 ## Technical Exchange Group
 
-![QQ交流群](https://github.com/yuunnn-w/TorchRWKV/blob/main/asset/qrcode_1713112204738.jpg)
+![QQ交流群](https://github.com/TorchRWKV/TorchRWKV6/blob/main/asset/qrcode_1713112204738.jpg)
 
 ****
 

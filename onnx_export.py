@@ -1,7 +1,7 @@
 import time
 import os
 import torch
-from src.model import RWKV_RNN
+from torchrwkv.rwkv6 import RWKV6
 
 if __name__ == '__main__':
     # 初始化模型参数
@@ -11,17 +11,17 @@ if __name__ == '__main__':
         'onnx_opset': '17', # 12
         'device': 'cpu',
     }
-    
+
     # 加载模型
     print(f"Loading model {args['MODEL_NAME']}.pth...")
-    model = RWKV_RNN(args)
+    model = RWKV6(args)
     print("Done.")
-    
+
     model.eval()  # 确保模型处于评估模式
     for param in model.parameters():
         param.requires_grad = False
     # 准备输入数据的示例
-    
+
     example_token = torch.zeros(5).long()  #token输入的尺寸 [batch]
     example_state = torch.rand(5, *model.state_size)  # state_size是state输入的尺寸
     A, B = model(example_token, example_state)

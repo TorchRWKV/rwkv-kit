@@ -39,8 +39,8 @@ TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该�
 
 4. 修改 `main.py` 中的 `MODEL_NAME` 参数。
 
-5. 运行推理：
-   ```
+For normal use:
+```
    python main.py
    ```
 
@@ -55,14 +55,105 @@ TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该�
    ```
    mkdir ONNX_Simplified
    ```
-4. （可选）简化模型：
-   ```
-   python simplify_large_onnx.py -m onnx/{model name}.onnx -o ONNX_Simplified/{model name}.onnx
-   ```
-5. （可选）修改 `onnx_infer.py` 中的模型路径并运行：
-   ```
-   python onnx_infer.py
-   ```
+Benchmark: (we use native torch to autoregress)
+```
+    import time
+    import os
+    import torch
+    from torchrwkv.rwkv6 import RWKV6
+    from torchrwkv.model_utils import RWKVConfig
+    from torchrwkv.sampler import sample_logits
+    from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+    config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
+                        state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
+                        prefill_kernel="triton-chunk",)
+    model = RWKV6(config=config)
+    # Please do not use torch.compile, since JIT is on by default
+    # Also, this will reduce the accuracy of the model by unknown reasons
+    # model = torch.compile(model)
+    tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
+    initial_string = """hello"""
+    batch_size = 128
+    TEMPERATURE = 1.0
+    TOP_P = 0.0
+    LENGTH_PER_TRIAL = 100
+    state = model.init_state(batch_size)
+
+
+    encoded_input = tokenizer.encode([initial_string] * batch_size)
+
+    token = torch.tensor(encoded_input).long().to(config.device)  #
+    t1 = time.time()
+    state = None
+    out, state = model.forward(token, state)
+    t2 = time.time()
+    print(f"Time: {t2 - t1}")
+
+    start_time = time.time()
+
+    for step in range(LENGTH_PER_TRIAL):
+        token_sampled = sample_logits(out, TEMPERATURE, TOP_P)
+        out, state = model.forward(token_sampled, state)
+
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    tokens_generated = LENGTH_PER_TRIAL * batch_size
+    speed = tokens_generated / total_time
+    print(f"\nTotal time: {total_time:.2f} seconds")
+    print(f"Tokens generated: {tokens_generated}")
+    print(f"Token generation speed: {speed:.2f} tokens/second")
+
+```
+
+
+
+| 方法 | 批次大小 | 令牌长度 | 预填充时间 (ms) | 令牌生成速度 (tokens/second) | 备注 |
+|------|---------|----------|----------------|----------------------------|------|
+| triton-chunk | 1 | 1024 | 132.50 | 42.83 | 适合推理和 state finetune, 在 token 更长的时候有性能优势 |
+| triton | 1 | 1024 | 121.79 | - | 适合推理和训练, 高精度, 某些情况不如 chunk 的速度 |
+| torch | 1 | 1024 | 595.22 | - | 适合在Triton不能使用的设备下推理 |
+| manual-torch | 1 | 1024 | 2468.00 | - | 适合在Triton不能使用的设备下训练，高精度 |
+| - | 1 | - | - | 48.42 | 不包含预填充 |
+| - | 64 | - | - | 1266.77 | 不包含预填充 |
+| - | 128 | - | - | 1875.03 | 不包含预填充 |
+
+注意：
+- "-" 表示数据未提供或不适用。
+- 对于批次大小为 1 的情况，只有 triton-chunk 方法提供了令牌生成速度（包含预填充）。
+- 对于其他批次大小，令牌生成速度不包含预填充时间。
+- 在 WSL2，Pytorch 2.5， Intel Arc A770下测试
+
+For normal use:
+```
+    initial_string = """User: 你好！ 请问你是什么模型？"""
+    batch_size = 2
+    state = None
+    TEMPERATURE = 1.0
+    TOP_P = 0.0
+    LENGTH_PER_TRIAL = 100
+
+
+    encoded_input = tokenizer.encode([initial_string] * batch_size)
+
+    token = torch.tensor(encoded_input).long().to(config.device)
+    token_all = torch.tensor(encoded_input).long().to(config.device)
+
+
+    for step in range(LENGTH_PER_TRIAL):
+        out, state = model.forward(token, state)
+        token = sample_logits(out, TEMPERATURE, TOP_P)
+        token_all = torch.cat((token_all, token.unsqueeze(1)), 1)
+
+        os.system('cls' if os.name == 'nt' else 'clear')
+        decoded_sequences = tokenizer.decode(token_all.cpu().tolist())
+        for i, seq in enumerate(decoded_sequences):
+            print(f"Batch {i+1}: {seq}")
+
+```
+
+
+
 
 ## 本地部署
 
@@ -143,6 +234,6 @@ TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该�
 ****
 ## Technical Exchange Group
 
-![QQ交流群](https://github.com/yuunnn-w/TorchRWKV/blob/main/asset/qrcode_1713112204738.jpg)
+![QQ交流群](https://github.com/TorchRWKV/TorchRWKV6/blob/main/asset/qrcode_1713112204738.jpg)
 
 **感谢各位大佬做出的贡献！欢迎各路大神为本项目提PR和Issue！你们的贡献对本项目十分有价值！！！**

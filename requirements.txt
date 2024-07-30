@@ -8,4 +8,5 @@ Flask
 tqdm
 optimum
 gradio
-git+https://github.com/TorchRWKV/flash-linear-attention.git#egg=fla
+# git+https://github.com/TorchRWKV/flash-linear-attention.git#egg=fla
+git+https://gitee.com/uniartisan2018/flash-linear-attention.git#egg=fla
