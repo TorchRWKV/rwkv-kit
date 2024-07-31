@@ -6,7 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "torch>=2.0.0,<3.0.0",
-        "fla @ git+https://github.com/TorchRWKV/flash-linear-attention.git",
+        "fla @ git+https://gitee.com/uniartisan2018/flash-linear-attention.git",
     ],
     author="Yang Xiao, Zhiyuan Li",
     author_email="jiaxinsugar@gmail.com, uniartisan2017@gmail.com",
