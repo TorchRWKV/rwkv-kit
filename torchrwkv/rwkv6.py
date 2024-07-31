@@ -172,7 +172,7 @@ class RWKV_Block(JITMODULE):
         return output
 
     @JITSCRIPT
-    def channel_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def channel_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool) -> torch.Tensor:
         """
         并行通道混合函数
         Args:
@@ -198,7 +198,7 @@ class RWKV_Block(JITMODULE):
         xr = torch.addcmul(x, sx_lerp, self.ffn_time_maa_r)
 
         r = torch.sigmoid(self.ffn_receptance(xr))  # [Batch, L, n_embd]
-        k = torch.relu(self.ffn_key(xk)).pow_(2)
+        k = torch.relu(self.ffn_key(xk)).pow_(2) if not training else torch.relu(self.ffn_key(xk)).pow(2)
 
         output = r * self.ffn_value(k)
         return output
@@ -285,9 +285,9 @@ class RWKV_Block(JITMODULE):
         """
         batch_size, L, H, S = x.size(0), x.size(1), self.n_head, self.head_size
         r, w, k, v, g, state = self.time_mixing_parallel_jit1(
-            x, state, i, batch_size, L, H, S, training)
+            x, state, i, batch_size, L, H, S)
         x, state = self.apply_time_mixxing_kernel(
-            r, w, k, v, state, i, batch_size, L, H, S, backend=self.config.prefill_kernel)
+            r, w, k, v, state, i, batch_size, L, H, S, backend=self.config.prefill_kernel, training=training)
         # 展平x并应用组归一化
         if self.onnx_opset >= 18:
             x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
@@ -301,11 +301,10 @@ class RWKV_Block(JITMODULE):
 
     @JITSCRIPT
     def time_mixing_parallel_jit1(self, x: torch.Tensor, state: torch.Tensor, i: int,
-                                  batch_size: int, L: int, H: int, S: int, training: bool = False):
+                                  batch_size: int, L: int, H: int, S: int):
         i1 = (2 + S) * i + 1
         # 初始化结果张量
-        tensors = [torch.empty_like(x) for _ in range(7)]
-        sx_lerp, xw, xk, xv, xr, xg, xxx = tensors
+        sx_lerp, xxx = torch.empty_like(x), torch.empty_like(x)
 
         # 计算初始插值
         sx_lerp[:, 0] = state[:, i1] - x[:, 0]
@@ -322,18 +321,11 @@ class RWKV_Block(JITMODULE):
 
         mw, mk, mv, mr, mg = xxx.unbind(dim=2)  # [10, 100, n_embd]
 
-        if not training:
-            torch.addcmul(x, sx_lerp, self.att_time_maa_w + mw, out=xw)
-            torch.addcmul(x, sx_lerp, self.att_time_maa_k + mk, out=xk)
-            torch.addcmul(x, sx_lerp, self.att_time_maa_v + mv, out=xv)
-            torch.addcmul(x, sx_lerp, self.att_time_maa_r + mr, out=xr)
-            torch.addcmul(x, sx_lerp, self.att_time_maa_g + mg, out=xg)
-        else:
-            xw = x + sx_lerp * (self.att_time_maa_w + mw)
-            xk = x + sx_lerp * (self.att_time_maa_k + mk)
-            xv = x + sx_lerp * (self.att_time_maa_v + mv)
-            xr = x + sx_lerp * (self.att_time_maa_r + mr)
-            xg = x + sx_lerp * (self.att_time_maa_g + mg)
+        xw = torch.addcmul(x, sx_lerp, self.att_time_maa_w + mw)
+        xk = torch.addcmul(x, sx_lerp, self.att_time_maa_k + mk)
+        xv = torch.addcmul(x, sx_lerp, self.att_time_maa_v + mv)
+        xr = torch.addcmul(x, sx_lerp, self.att_time_maa_r + mr)
+        xg = torch.addcmul(x, sx_lerp, self.att_time_maa_g + mg)
 
         w = (self.att_time_decay +
              (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
@@ -348,7 +340,7 @@ class RWKV_Block(JITMODULE):
 
     def apply_time_mixxing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
                                   v: torch.Tensor, state: torch.Tensor, i: int,
-                                  batch_size: int, L: int, H: int, S: int, backend: str = "torch"):
+                                  batch_size: int, L: int, H: int, S: int, backend: str = "torch", training: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Apply the time mixing kernel operation with support for multiple backend implementations.
 
@@ -395,7 +387,7 @@ class RWKV_Block(JITMODULE):
 
             # Apply the chosen kernel function
             o, state_layer = self.kernel_function(
-                r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True)
+                r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True, training=training)
             x = rearrange(o, 'b h l d -> b l (h d)')
             state[:, (2+S)*i+2:(2+S)*(i+1)
                   ] = state_layer.view(batch_size, S, -1)
@@ -460,12 +452,12 @@ class RWKV_Block(JITMODULE):
         """
         if self.onnx_opset >= 17:
             x = x + self.time_mixing_parallel(self.ln1(x), state, i, training)
-            x = x + self.channel_mixing_parallel(self.ln2(x), state, i)
+            x = x + self.channel_mixing_parallel(self.ln2(x), state, i, training)
         else:
             x = x + self.time_mixing_parallel(self.manual_layer_norm(
                 x, self.ln1_weight, self.ln1_bias, 1e-5), state, i, training)
             x = x + self.channel_mixing_parallel(self.manual_layer_norm(
-                x, self.ln2_weight, self.ln2_bias, 1e-5), state, i)
+                x, self.ln2_weight, self.ln2_bias, 1e-5), state, i, training)
         return x
 
 
