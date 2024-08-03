@@ -116,9 +116,9 @@ def sample_logits(out: torch.Tensor, temperature: float | torch.Tensor = 1.0
         dtype = out.dtype
         # Ensure all tensors are on CPU
         if not isinstance(temperature, torch.Tensor):
-            temperature = torch.full((batch_size,), float(temperature), dtype=dtype)
+            temperature = torch.full((batch_size,), float(temperature), dtype=dtype, device=out.device)
         if not isinstance(top_p, torch.Tensor):
-            top_p = torch.full((batch_size,), float(top_p), dtype=dtype)
+            top_p = torch.full((batch_size,), float(top_p), dtype=dtype, device=out.device)
 
         if use_cpu:
             out, temperature, top_p = out.cpu(), temperature.cpu(), top_p.cpu()

@@ -4,6 +4,10 @@ setup(
     name="torchrwkv",
     version="0.1.0",
     packages=find_packages(),
+    include_package_data=True,
+    package_data={
+        'torchrwkv': ['assets/*'],
+    },
     install_requires=[
         "torch>=2.0.0,<3.0.0",
         "fla @ git+https://gitee.com/uniartisan2018/flash-linear-attention.git",

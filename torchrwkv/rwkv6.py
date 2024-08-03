@@ -1,21 +1,18 @@
 from einops import rearrange
-from .model_utils import RWKV_x060, RWKVConfig
-from . import JITMODULE, JITSCRIPT
-from typing import Tuple, Optional
+from torchrwkv.model_utils import RWKV_x060, RWKVConfig
+from typing import Tuple, Optional, List, Dict, Generator, Union
 import numpy as np
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import os
-import sys
-# 获取当前脚本文件的路径
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# 构建 'src' 目录的相对路径
-src_dir = os.path.join(current_dir, '..')
-# 将 'src' 目录的绝对路径添加到 Python 模块搜索路径中
-sys.path.append(os.path.abspath(src_dir))
+from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+from torchrwkv.sampler import sample_logits
 
 
+DISABLE_JIT = os.getenv("DISABLE_JIT", "0") == "1"
+JITMODULE = torch.jit.ScriptModule if not DISABLE_JIT else nn.Module
+JITSCRIPT = torch.jit.script_method if not DISABLE_JIT else lambda x: x
 
 class RWKV_Block(JITMODULE):
     """
@@ -472,6 +469,7 @@ class RWKV6(JITMODULE):
     def __init__(self, config: RWKVConfig):
         super().__init__()
         self.config = config
+        self.tokenizer = RWKV_TOKENIZER(self.config.vocab_file)
         try:
             self.onnx_opset_version = int(self.config.onnx_opset_version)
         except:
@@ -606,6 +604,72 @@ class RWKV6(JITMODULE):
             out, state = self.forward_prefill_chunks(token, state, self.config.chunk_size)
             out = out[:, -1]
         return out, state
+
+    @torch.no_grad
+    def chat(self, messages: List[Dict[str, str]], max_len: int = 512, temperature: float=1.0,
+             top_p: float=0.6, end_id: int = 0, stream: bool = False) -> List[str]:
+        """
+        聊天函数。
+        Args:
+            messages (List[str]): 输入的消息列表。
+            max_len (int): 最大生成长度。
+        Returns:
+            List[str]: 生成的回复列表。
+        """
+        prompt = self.apply_chat_temple(messages)
+        return self.generate(prompt, max_len, temperature, top_p, end_id, include_prompt=False, stream=stream)
+
+    def apply_chat_temple(self, messages: List[str]) -> str:
+        prompt = ""
+        for i in messages:
+            if i["role"] == "user":
+                prompt += f"User: {i['content']} \n\n"
+            elif i['role'] == "system":
+                prompt += f"System: {i['content']} \n\n"
+            elif i['role'] == "assistant":
+                prompt += f"Assistant: {i['content']} \n\n"
+        prompt += "Assistant:"
+        return prompt
+
+    @torch.no_grad
+    def generate(self, prompt: str, max_len: int = 512, temperature: float=1.0,
+                 top_p: float=0.6, end_id: int = 0, include_prompt = True,
+                 stream: bool = False, stop=['\n\nUser', '<|endoftext|>']) -> Union[str, Generator[str, None, None]]:
+        state = self.init_state(1)
+        end_tensor = torch.tensor(end_id, dtype=torch.long, device=self.config.device)
+        token_full = torch.tensor(self.tokenizer.encode([prompt]), dtype=torch.long, device=self.config.device)
+
+        out, state = self.forward_prefill(token_full, state)
+        token = sample_logits(out[:, -1], temperature, top_p)
+        token_first_time = token
+
+        if include_prompt:
+            token_full = torch.cat([token_full, token_first_time.unsqueeze(1)], dim=1)
+        else:
+            token_full = token_first_time.unsqueeze(1)
+
+        def token_generator(token: torch.Tensor, state: torch.Tensor):
+            for i in range(max_len):
+                out, state = self.forward_autoregressive(token, state)
+                token = sample_logits(out, temperature, top_p)
+                if token == end_tensor:
+                    break
+                yield token
+
+        if stream:
+            def stream_generator():
+                yield self.tokenizer.decode(token_first_time.unsqueeze(1).cpu().tolist())[0]
+                for t in token_generator(token_first_time, state):
+                    yield self.tokenizer.decode(t.unsqueeze(1).cpu().tolist())[0]
+            return stream_generator()
+        else:
+            for t in token_generator(token, state):
+                token_full = torch.cat([token_full, t.unsqueeze(1)], dim=1)
+            response = self.tokenizer.decode(token_full.cpu().tolist())[0]
+            for s in stop:
+                response = response.split(s)[0]
+            return response
+
 
     def forward_autoregressive(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

@@ -71,7 +71,6 @@ Benchmark: (we use native torch to autoregress)
     # Please do not use torch.compile, since JIT is on by default
     # Also, this will reduce the accuracy of the model by unknown reasons
     # model = torch.compile(model)
-    tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
     initial_string = """hello"""
     batch_size = 128
     TEMPERATURE = 1.0
@@ -80,7 +79,7 @@ Benchmark: (we use native torch to autoregress)
     state = model.init_state(batch_size)
 
 
-    encoded_input = tokenizer.encode([initial_string] * batch_size)
+    encoded_input = model.tokenizer.encode([initial_string] * batch_size)
 
     token = torch.tensor(encoded_input).long().to(config.device)  #
     t1 = time.time()
@@ -111,7 +110,7 @@ Benchmark: (we use native torch to autoregress)
 | 方法 | 批次大小 | 令牌长度 | 预填充时间 (ms) | 令牌生成速度 (tokens/second) | 备注 |
 |------|---------|----------|----------------|----------------------------|------|
 | triton-chunk | 1 | 1024 | 132.50 | 42.83 | 适合推理和 state finetune, 在 token 更长的时候有性能优势 |
-| triton | 1 | 1024 | 121.79 | - | 适合推理和训练, 高精度, 某些情况不如 chunk 的速度 |
+| triton | 1 | 1024 | 105.49 | - | 适合推理和训练, 高精度, 某些情况不如 chunk 的速度 |
 | torch | 1 | 1024 | 595.22 | - | 适合在Triton不能使用的设备下推理 |
 | manual-torch | 1 | 1024 | 2468.00 | - | 适合在Triton不能使用的设备下训练，高精度 |
 | - | 1 | - | - | 48.42 | 不包含预填充 |
@@ -122,7 +121,7 @@ Benchmark: (we use native torch to autoregress)
 - "-" 表示数据未提供或不适用。
 - 对于批次大小为 1 的情况，只有 triton-chunk 方法提供了令牌生成速度（包含预填充）。
 - 对于其他批次大小，令牌生成速度不包含预填充时间。
-- 在 WSL2，Pytorch 2.5， Intel Arc A770下测试
+- 在 WSL2，Pytorch 2.5， Intel Arc A770, 1.6B下测试
 
 For normal use:
 ```
@@ -134,7 +133,7 @@ For normal use:
     LENGTH_PER_TRIAL = 100
 
 
-    encoded_input = tokenizer.encode([initial_string] * batch_size)
+    encoded_input = model.tokenizer.encode([initial_string] * batch_size)
 
     token = torch.tensor(encoded_input).long().to(config.device)
     token_all = torch.tensor(encoded_input).long().to(config.device)
@@ -146,24 +145,24 @@ For normal use:
         token_all = torch.cat((token_all, token.unsqueeze(1)), 1)
 
         os.system('cls' if os.name == 'nt' else 'clear')
-        decoded_sequences = tokenizer.decode(token_all.cpu().tolist())
+        decoded_sequences = model.tokenizer.decode(token_all.cpu().tolist())
         for i, seq in enumerate(decoded_sequences):
             print(f"Batch {i+1}: {seq}")
 
 ```
 
+你也可以尝试新的高级API:
+```
+    print(model.generate(initial_string, LENGTH_PER_TRIAL, TEMPERATURE, TOP_P, include_prompt=True))
+    print(model.chat([{"role": "user", "content": "你是什么模型?"}], 500, TEMPERATURE, TOP_P))
+    for i in model.chat([{"role": "user", "content": "你好呀"}], 500, TEMPERATURE, TOP_P, stream=True):
+        print(i, end="", flush=True)
+```
 
-
-
-## 本地部署
-
-1. 修改 `openai_api.py` 中的模型配置。
-2. 启动后端：
-   ```
-   python openai_api.py
-   ```
-3. 使用任何兼容 OpenAI API 的客户端，将 `http://127.0.0.1:8848` 作为 `API_URL`。
-
+本地 OpenAI 兼容客户端:
+```
+python -m torchrwkv.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
+```
 ## 注意
 
 本框架目前仅支持 RWKV v6 模型，具体版本号为 x060。

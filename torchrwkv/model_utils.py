@@ -14,7 +14,7 @@ from packaging import version
 
 from dataclasses import dataclass, asdict
 from typing import Optional, Literal
-
+from importlib import resources
 
 
 @dataclass
@@ -34,11 +34,24 @@ class RWKVConfig:
     n_layer: Optional[int] = 24
     head_size_a: Optional[int] = 64
     head_size_divisor: Optional[int] = 8
+    vocab_file: Optional[str] = None
+    use_jit: Optional[bool] = True
 
 
     def __post_init__(self):
         if self.device is None:
             self.check_available_device()
+        if self.vocab_file is None:
+            with resources.path('torchrwkv.assets', 'rwkv_vocab_v20230424.txt') as path:
+                self.vocab_file = str(path)
+        if not self.use_jit:
+            os.environ['DISABLE_JIT'] = '1'
+        if 'triton' in self.prefill_kernel:
+            try:
+                import triton
+            except ImportError:
+                raise ImportError(
+                    "Please install triton to use the triton prefill kernel.")
 
     def check_available_device(self):
         if torch.cuda.is_available():
@@ -54,7 +67,7 @@ class RWKVConfig:
 
             try:
                 pytorch_version = torch.__version__.split('.')[:2]
-                if int(pytorch_version[0]) > 2 or (int(pytorch_version[0]) == 2 and int(pytorch_version[1]) > 4):
+                if int(pytorch_version[0]) > 2 or (int(pytorch_version[0]) == 2 and int(pytorch_version[1]) >= 4):
                     pass
                 else:
                     import intel_extension_for_pytorch as ipex

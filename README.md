@@ -53,7 +53,6 @@ Benchmark: (we use native torch to autoregress)
     # Please do not use torch.compile, since JIT is on by default
     # Also, this will reduce the accuracy of the model by unknown reasons
     # model = torch.compile(model)
-    tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
     initial_string = """hello"""
     batch_size = 128
     TEMPERATURE = 1.0
@@ -62,7 +61,7 @@ Benchmark: (we use native torch to autoregress)
     state = model.init_state(batch_size)
 
 
-    encoded_input = tokenizer.encode([initial_string] * batch_size)
+    encoded_input = model.tokenizer.encode([initial_string] * batch_size)
 
     token = torch.tensor(encoded_input).long().to(config.device)  #
     t1 = time.time()
@@ -92,7 +91,7 @@ Benchmark: (we use native torch to autoregress)
 | Method | Batch Size | Token Length | Prefill Time (ms) | Token Generation Speed (tokens/second) | Notes |
 |--------|------------|--------------|-------------------|---------------------------------------|-------|
 | triton-chunk | 1 | 1024 | 132.50 | 42.83 | Suitable for inference and state fine-tuning, better speed for long tokens |
-| triton | 1 | 1024 | 121.79 | - | Suitable for inference and training, high accuracy |
+| triton | 1 | 1024 | 105.49 | - | Suitable for inference and training, high accuracy |
 | torch | 1 | 1024 | 595.22 | - | Suitable for inference on devices where Triton is unavailable |
 | manual-torch | 1 | 1024 | 2468.00 | - | Suitable for training on devices where Triton is unavailable, high accuracy |
 | - | 1 | - | - | 48.42 | Excluding prefill |
@@ -103,7 +102,7 @@ Notes:
 - "-" indicates data not provided or not applicable.
 - For batch size 1, only the triton-chunk method provides token generation speed (including prefill).
 - For other batch sizes, token generation speeds do not include prefill time.
-- Tested on WSL2, PyTorch 2.5, Intel Arc A770.
+- Tested on WSL2, PyTorch 2.5, Intel Arc A770, 1.6B.
 
 For normal use:
 ```
@@ -133,7 +132,13 @@ For normal use:
 
 ```
 
-
+You can also try:
+```
+    print(model.generate(initial_string, LENGTH_PER_TRIAL, TEMPERATURE, TOP_P, include_prompt=True))
+    print(model.chat([{"role": "user", "content": "你是什么模型?"}], 500, TEMPERATURE, TOP_P))
+    for i in model.chat([{"role": "user", "content": "你好呀"}], 500, TEMPERATURE, TOP_P, stream=True):
+        print(i, end="", flush=True)
+```
 
 ## ONNX Export
 
@@ -155,14 +160,11 @@ For normal use:
    python onnx_infer.py
    ```
 
-## Local Deployment
+To start an OpenAI server:
 
-1. Modify model configuration in `openai_api.py`.
-2. Start the backend:
-   ```
-   python openai_api.py
-   ```
-3. Use any OpenAI API-compatible client with `http://127.0.0.1:8848` as the `API_URL`.
+```
+python -m torchrwkv.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
+```
 
 ## Note
 
