@@ -3,8 +3,8 @@ import json
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
-from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
-from torchrwkv.rwkv6 import RWKV6
+from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
+from rwkvkit.rwkv6 import RWKV6
 import torch
 from torch.optim.lr_scheduler import LinearLR
 import torch.nn.functional as F
@@ -129,7 +129,7 @@ class MaskTextDataset(Dataset):
         input_output_tokens = [token for text_token in user_assistant_tokens for token in text_token]
         return input_output_tokens, user_assistant_tokens, user_end_positions
 
-from torchrwkv.model_utils import RWKVConfig
+from rwkvkit.model_utils import RWKVConfig
 # 初始化模型参数
 config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
                         state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',

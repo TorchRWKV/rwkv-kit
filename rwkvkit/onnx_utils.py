@@ -93,7 +93,12 @@ def create_node_name(node_type):
     return name
 
 
-def create_const_of_shape(shape, dtype=onnx.TensorProto.FLOAT, value=0.0, output_name=None, node_name=None):
+def create_const_of_shape(
+        shape,
+        dtype=onnx.TensorProto.FLOAT,
+        value=0.0,
+        output_name=None,
+        node_name=None):
     if node_name is None:
         node_name = create_node_name("ConstantOfShape")
     if not output_name:
@@ -102,9 +107,14 @@ def create_const_of_shape(shape, dtype=onnx.TensorProto.FLOAT, value=0.0, output
 
     shape_dim = [len(shape)]
     shape_initializer = onnx.helper.make_tensor(
-        name=const_shape_name, data_type=onnx.TensorProto.INT64, dims=shape_dim, vals=shape, raw=False)
+        name=const_shape_name,
+        data_type=onnx.TensorProto.INT64,
+        dims=shape_dim,
+        vals=shape,
+        raw=False)
 
-    tensor_value_attr = onnx.helper.make_tensor("value", dtype, dims=[1], vals=[value])
+    tensor_value_attr = onnx.helper.make_tensor(
+        "value", dtype, dims=[1], vals=[value])
 
     node = onnx.helper.make_node(op_type="ConstantOfShape",
                                  inputs=[const_shape_name],

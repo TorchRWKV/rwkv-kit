@@ -1,6 +1,6 @@
-########################################################################################################
+##########################################################################
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
-########################################################################################################
+##########################################################################
 
 import torch
 import types
@@ -37,12 +37,11 @@ class RWKVConfig:
     vocab_file: Optional[str] = None
     use_jit: Optional[bool] = True
 
-
     def __post_init__(self):
         if self.device is None:
             self.check_available_device()
         if self.vocab_file is None:
-            with resources.path('torchrwkv.assets', 'rwkv_vocab_v20230424.txt') as path:
+            with resources.path('rwkvkit.assets', 'rwkv_vocab_v20230424.txt') as path:
                 self.vocab_file = str(path)
         if not self.use_jit:
             os.environ['DISABLE_JIT'] = '1'
@@ -67,7 +66,8 @@ class RWKVConfig:
 
             try:
                 pytorch_version = torch.__version__.split('.')[:2]
-                if int(pytorch_version[0]) > 2 or (int(pytorch_version[0]) == 2 and int(pytorch_version[1]) >= 4):
+                if int(pytorch_version[0]) > 2 or (
+                        int(pytorch_version[0]) == 2 and int(pytorch_version[1]) >= 4):
                     pass
                 else:
                     import intel_extension_for_pytorch as ipex
@@ -88,12 +88,9 @@ class RWKVConfig:
         self.device = 'cpu'
 
 
-
-
-
-########################################################################################################
+##########################################################################
 # RWKV TIMEMix
-########################################################################################################
+##########################################################################
 
 
 class RWKV_Tmix_x060(nn.Module):
@@ -130,7 +127,7 @@ class RWKV_Tmix_x060(nn.Module):
 
             D_MIX_LORA = 32  # generate TIME_MIX for w,k,v,r,g
             self.time_maa_w1 = nn.Parameter(
-                torch.zeros(self.config.n_embd, D_MIX_LORA*5))
+                torch.zeros(self.config.n_embd, D_MIX_LORA * 5))
             self.time_maa_w2 = nn.Parameter(torch.zeros(
                 5, D_MIX_LORA, self.config.n_embd).uniform_(-0.01, 0.01))
 
@@ -168,11 +165,11 @@ class RWKV_Tmix_x060(nn.Module):
         self.gate = nn.Linear(self.config.n_embd,
                               self.config.n_embd, bias=False)
         self.ln_x = nn.GroupNorm(self.n_head, self.config.n_embd, eps=(
-            1e-5)*(self.config.head_size_divisor**2))
+            1e-5) * (self.config.head_size_divisor**2))
 
-########################################################################################################
+##########################################################################
 # RWKV ChannelMix
-########################################################################################################
+##########################################################################
 
 
 class RWKV_CMix_x060(nn.Module):
@@ -209,9 +206,9 @@ class RWKV_CMix_x060(nn.Module):
         kv = self.value(k)
         return torch.sigmoid(self.receptance(xr)) * kv
 
-########################################################################################################
+##########################################################################
 # RWKV Block
-########################################################################################################
+##########################################################################
 
 
 class Block(nn.Module):
@@ -239,9 +236,9 @@ class Block(nn.Module):
 
         return x
 
-########################################################################################################
+##########################################################################
 # RWKV Model
-########################################################################################################
+##########################################################################
 
 
 class RWKV_x060(nn.Module):
@@ -290,10 +287,11 @@ class RWKV_x060(nn.Module):
             print(f"{s0.ljust(5)} {s1.ljust(5)} {s2.ljust(5)} {n}", end="")
 
             scale = 1.0
-            if "ln_" in n or ".ln" in n or "time_" in n or n.endswith('_w') or n.endswith('_w1') or n.endswith('_w2') or n.endswith('_bias'):
+            if "ln_" in n or ".ln" in n or "time_" in n or n.endswith(
+                    '_w') or n.endswith('_w1') or n.endswith('_w2') or n.endswith('_bias'):
                 if 'ln_x.weight' in n:
                     layer_scale = (
-                        1+int(n.split('.')[1])) / self.self.config.n_layer
+                        1 + int(n.split('.')[1])) / self.self.config.n_layer
                     m[n] = (p * 0.0) + (layer_scale ** 0.7)
                 else:
                     m[n] = p

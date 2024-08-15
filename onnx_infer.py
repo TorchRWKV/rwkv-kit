@@ -2,8 +2,8 @@ import time
 import os
 import numpy as np
 import onnxruntime as ort
-from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER #切换到速度更快的分词器
-from torchrwkv.sampler import sample_logits_numpy as sample_logits
+from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER #切换到速度更快的分词器
+from rwkvkit.sampler import sample_logits_numpy as sample_logits
 
 if __name__ == '__main__':
     # Load the ONNX model

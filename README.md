@@ -1,6 +1,6 @@
-# TorchRWKV
+# rwkv-kit
 
-TorchRWKV is a pure PyTorch implementation of the RWKV large language model inference framework. This project aims to provide a flexible and easily scalable PyTorch implementation for the RWKV x060 model, supporting various features such as batch inference, parallel inference, ONNX format export, and standalone training.
+rwkv-kit is a pure PyTorch implementation of the RWKV large language model inference framework. This project aims to provide a flexible and easily scalable PyTorch implementation for the RWKV x060 model, supporting various features such as batch inference, parallel inference, ONNX format export, and standalone training.
 
 ## Features
 
@@ -26,12 +26,12 @@ Contributions for additional device support are welcome.
 
 1. Clone the repository:
    ```
-   git clone -b dev https://github.com/uniartisan/TorchRWKV.git
+   git clone -b dev https://github.com/TorchRWKV/rwkv-kit.git
    ```
 
 2. Install dependencies:
    ```
-   cd TorchRWKV
+   cd rwkv-kit
    pip install -r requirements.txt
    ```
 
@@ -42,10 +42,10 @@ Benchmark: (we use native torch to autoregress)
     import time
     import os
     import torch
-    from torchrwkv.rwkv6 import RWKV6
-    from torchrwkv.model_utils import RWKVConfig
-    from torchrwkv.sampler import sample_logits
-    from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+    from rwkv-kit.rwkv6 import RWKV6
+    from rwkv-kit.model_utils import RWKVConfig
+    from rwkv-kit.sampler import sample_logits
+    from rwkv-kit.rwkv_tokenizer import RWKV_TOKENIZER
     config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
                         state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
                         prefill_kernel="triton-chunk",)
@@ -163,7 +163,7 @@ You can also try:
 To start an OpenAI server:
 
 ```
-python -m torchrwkv.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
+python -m rwkv-kit.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
 ```
 
 ## Note
@@ -241,7 +241,7 @@ We welcome contributions from the community. Please feel free to submit PRs and 
 ****
 ## Technical Exchange Group
 
-![QQ交流群](https://github.com/TorchRWKV/TorchRWKV6/blob/main/asset/qrcode_1713112204738.jpg)
+![QQ交流群](https://github.com/rwkv-kit/rwkv-kit6/blob/main/asset/qrcode_1713112204738.jpg)
 
 ****
 

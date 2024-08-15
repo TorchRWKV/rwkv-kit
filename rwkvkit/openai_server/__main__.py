@@ -1,15 +1,17 @@
 from flask import Flask, request, Response, jsonify
 from flask import stream_with_context
-from torchrwkv.rwkv6 import RWKV6
+from rwkvkit.rwkv6 import RWKV6
 import time
 import uuid
 import json
 import argparse
-from torchrwkv.model_utils import RWKVConfig
+from rwkvkit.model_utils import RWKVConfig
 
 app = Flask(__name__)
 
 # 添加跨域头信息的装饰器
+
+
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -19,6 +21,7 @@ def add_cors_headers(response):
     return response
 
 # 初始化模型和分词器
+
 
 def init_model(model_path, state_path, prefill_kernel, use_jit):
     config = RWKVConfig(
@@ -32,6 +35,7 @@ def init_model(model_path, state_path, prefill_kernel, use_jit):
     print("Done")
     return model
 
+
 def format_messages_to_prompt(messages):
     formatted_prompt = ""
 
@@ -44,16 +48,28 @@ def format_messages_to_prompt(messages):
 
     # Iterate through the messages and format them
     for message in messages:
-        role = role_names.get(message['role'], 'Unknown')  # Get the role name, default to 'Unknown'
+        # Get the role name, default to 'Unknown'
+        role = role_names.get(message['role'], 'Unknown')
         content = message['content']
-        formatted_prompt += f"{role}: {content}\n\n"  # Add the role and content to the prompt with newlines
+        # Add the role and content to the prompt with newlines
+        formatted_prompt += f"{role}: {content}\n\n"
 
     formatted_prompt += "Assistant: "
     return formatted_prompt
 
 # 生成文本的函数
-def generate_text(prompt: str, temperature=1.0, top_p=0.0, presence_penalty=0.0,
-                        frequency_penalty=0.0, max_tokens=500, stop=['\n\nUser', '<|endoftext|>']):
+
+
+def generate_text(
+    prompt: str,
+    temperature=1.0,
+    top_p=0.0,
+    presence_penalty=0.0,
+    frequency_penalty=0.0,
+    max_tokens=500,
+    stop=[
+        '\n\nUser',
+        '<|endoftext|>']):
     completion = model.generate(prompt, max_tokens, temperature, top_p)
 
     # 由于我们不再有tokenizer，我们无法准确计算token数量
@@ -71,10 +87,25 @@ def generate_text(prompt: str, temperature=1.0, top_p=0.0, presence_penalty=0.0,
     return completion, False, usage
 
 # 生成文本的生成器函数
-def generate_text_stream(messages, temperature=1.0, top_p=0.0, presence_penalty=0.0,
-                        frequency_penalty=0.0, max_tokens=500, stop=['\n\nUser', '<|endoftext|>']):
+
+
+def generate_text_stream(
+    messages,
+    temperature=1.0,
+    top_p=0.0,
+    presence_penalty=0.0,
+    frequency_penalty=0.0,
+    max_tokens=500,
+    stop=[
+        '\n\nUser',
+        '<|endoftext|>']):
     total_response = ""
-    for chunk in model.chat(messages, max_tokens, temperature, top_p, stream=True):
+    for chunk in model.chat(
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stream=True):
         response = {
             "object": "chat.completion.chunk",
             "model": "rwkv",
@@ -105,7 +136,6 @@ def generate_text_stream(messages, temperature=1.0, top_p=0.0, presence_penalty=
     yield "data: [DONE]"
 
 
-
 # 处理 OPTIONS 请求
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def options_request():
@@ -113,6 +143,8 @@ def options_request():
 
 # 定义流式输出的路由
 # Define your completion route
+
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def create_completion():
     try:
@@ -136,14 +168,22 @@ def create_completion():
                     yield event
             return Response(generate(), content_type='text/event-stream')
             """
-            response = Response(stream_with_context(generate_text_stream(messages, temperature=temperature, top_p=top_p, presence_penalty=presence_penalty,
-                                                 frequency_penalty=frequency_penalty, max_tokens=max_tokens, stop=stop)),
-                                content_type='text/event-stream')
+            response = Response(
+                stream_with_context(
+                    generate_text_stream(
+                        messages,
+                        temperature=temperature,
+                        top_p=top_p,
+                        presence_penalty=presence_penalty,
+                        frequency_penalty=frequency_penalty,
+                        max_tokens=max_tokens,
+                        stop=stop)),
+                content_type='text/event-stream')
             response.timeout = None  # 设置超时时间为无限制
             return response
         else:
             completion, if_max_token, usage = generate_text(model.apply_chat_temple(messages), temperature=temperature, top_p=top_p, presence_penalty=presence_penalty,
-                                                 frequency_penalty=frequency_penalty, max_tokens=max_tokens, stop=stop)
+                                                            frequency_penalty=frequency_penalty, max_tokens=max_tokens, stop=stop)
             finish_reason = "stop" if if_max_token else "length"
             unique_id = str(uuid.uuid4())
             current_timestamp = int(time.time())
@@ -170,19 +210,46 @@ def create_completion():
     except Exception as e:
         return str(e), 500
 
+
 def main():
     parser = argparse.ArgumentParser(description="Run RWKV API server")
-    parser.add_argument("--model", type=str, required=True, help="Path to the model file")
-    parser.add_argument("--state", type=str, default="", help="Path to the state file")
-    parser.add_argument("--prefill_kernel", type=str, default="triton", help="kernel to prefill the model")
-    parser.add_argument("--use_jit", type=bool, default=True, help="whether to use JIT")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the server on")
-    parser.add_argument("--port", type=int, default=8848, help="Port to run the server on")
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="Path to the model file")
+    parser.add_argument(
+        "--state",
+        type=str,
+        default="",
+        help="Path to the state file")
+    parser.add_argument(
+        "--prefill_kernel",
+        type=str,
+        default="triton",
+        help="kernel to prefill the model")
+    parser.add_argument(
+        "--use_jit",
+        type=bool,
+        default=True,
+        help="whether to use JIT")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host to run the server on")
+    parser.add_argument("--port", type=int, default=8848,
+                        help="Port to run the server on")
     args = parser.parse_args()
 
     global model
-    model = init_model(args.model, args.state, args.prefill_kernel, args.use_jit)
+    model = init_model(
+        args.model,
+        args.state,
+        args.prefill_kernel,
+        args.use_jit)
     app.run(host=args.host, port=args.port)
+
 
 if __name__ == '__main__':
     main()

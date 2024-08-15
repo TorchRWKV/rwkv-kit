@@ -1,6 +1,6 @@
-# TorchRWKV
+# rwkv-kit
 
-TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该项目旨在为 RWKV x060 模型提供一个灵活、易于扩展的 PyTorch 实现，同时支持多种功能，如批量推理、并行推理、ONNX 格式导出和单机训练。
+rwkv-kit 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该项目旨在为 RWKV x060 模型提供一个灵活、易于扩展的 PyTorch 实现，同时支持多种功能，如批量推理、并行推理、ONNX 格式导出和单机训练。
 
 ## 特性
 
@@ -26,12 +26,12 @@ TorchRWKV 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该�
 
 1. 克隆仓库：
    ```
-   git clone -b dev https://github.com/uniartisan/TorchRWKV.git
+   git clone -b dev https://github.com/TorchRWKV/rwkv-kit.git
    ```
 
 2. 安装依赖：
    ```
-   cd TorchRWKV
+   cd rwkv-kit
    pip install -r requirements.txt
    ```
 
@@ -60,10 +60,10 @@ Benchmark: (we use native torch to autoregress)
     import time
     import os
     import torch
-    from torchrwkv.rwkv6 import RWKV6
-    from torchrwkv.model_utils import RWKVConfig
-    from torchrwkv.sampler import sample_logits
-    from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+    from rwkv-kit.rwkv6 import RWKV6
+    from rwkv-kit.model_utils import RWKVConfig
+    from rwkv-kit.sampler import sample_logits
+    from rwkv-kit.rwkv_tokenizer import RWKV_TOKENIZER
     config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
                         state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
                         prefill_kernel="triton-chunk",)
@@ -161,7 +161,7 @@ For normal use:
 
 本地 OpenAI 兼容客户端:
 ```
-python -m torchrwkv.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
+python -m rwkv-kit.openai_server --model model_path --state state_path(optional) --host 0.0.0.0 --port 8848
 ```
 ## 注意
 
@@ -233,6 +233,6 @@ python -m torchrwkv.openai_server --model model_path --state state_path(optional
 ****
 ## Technical Exchange Group
 
-![QQ交流群](https://github.com/TorchRWKV/TorchRWKV6/blob/main/asset/qrcode_1713112204738.jpg)
+![QQ交流群](https://github.com/rwkv-kit/rwkv-kit6/blob/main/asset/qrcode_1713112204738.jpg)
 
 **感谢各位大佬做出的贡献！欢迎各路大神为本项目提PR和Issue！你们的贡献对本项目十分有价值！！！**

@@ -1,0 +1,1 @@
+git+https://gitee.com/uniartisan2018/flash-linear-attention.git#egg=fla

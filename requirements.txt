@@ -1,12 +1,3 @@
 torch>=2.1.0
-numpy>=1.24.3
-onnxsim>=0.4.36
-onnx>=1.15.0
-onnxruntime>=1.17.1
-icecream
-Flask
-tqdm
-optimum
-gradio
-# git+https://github.com/TorchRWKV/flash-linear-attention.git#egg=fla
-git+https://gitee.com/uniartisan2018/flash-linear-attention.git#egg=fla
+einops
+packaging

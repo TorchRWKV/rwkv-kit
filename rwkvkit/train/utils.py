@@ -7,14 +7,20 @@ from torch.utils.data import Dataset
 
 
 class MaskTextDataset(Dataset):
-    def __init__(self, data_file, ctx_len: int, prefill: bool, tokenizer=None, method='left'):
+    def __init__(
+            self,
+            data_file,
+            ctx_len: int,
+            prefill: bool,
+            tokenizer=None,
+            method='left'):
         self.file_path = data_file
 
         if tokenizer is not None:
             self.tokenizer = tokenizer
         else:
             # 使用默认的tokenizer
-            from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
+            from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
             import os
             current_dir = os.path.dirname(os.path.abspath(__file__))
             parent_dir = os.path.dirname(os.path.dirname(current_dir))
@@ -56,12 +62,13 @@ class MaskTextDataset(Dataset):
                     mask = torch.cat(
                         (torch.zeros((pad_size,), dtype=bool).bool(), mask), dim=0)  # 对mask也进行填充
                     user_end_positions = [
-                        i+pad_size for i in user_end_positions]
+                        i + pad_size for i in user_end_positions]
                 else:
                     input_output_tokens = torch.cat(
                         (input_output_tokens, pad_tensor), dim=0)
                     mask = torch.cat(
-                        (mask, torch.zeros((pad_size,), dtype=bool).bool()), dim=0)  # 对mask也进行填充
+                        (mask, torch.zeros(
+                            (pad_size,), dtype=bool).bool()), dim=0)  # 对mask也进行填充
             elif input_output_tokens.size(0) > self.prefill_lenth:
                 input_output_tokens = input_output_tokens[:self.prefill_lenth]
                 mask = mask[:self.prefill_lenth]
@@ -104,8 +111,16 @@ class MaskTextDataset(Dataset):
             if i % 2 == 0:  # 用户输入
                 text_list.append(texts_list_split[i])
             else:  # 助手回复
-                text_list.append(texts_list_split[i].replace('\n\nAssistant: ', '').replace(
-                    "\n\n<|endoftext|>", '').replace("<|endoftext|>\n\n", "").replace("<|endoftext|>", ""))
+                text_list.append(
+                    texts_list_split[i].replace(
+                        '\n\nAssistant: ',
+                        '').replace(
+                        "\n\n<|endoftext|>",
+                        '').replace(
+                        "<|endoftext|>\n\n",
+                        "").replace(
+                        "<|endoftext|>",
+                        ""))
 
         user_assistant_tokens = []
         current_token_len = 0
@@ -114,12 +129,12 @@ class MaskTextDataset(Dataset):
             if i % 2 == 0:  # 用户输入
                 # + self.tokenizer.encode("\n\nAssistant: ")[0]
                 user_token = self.tokenizer.encode(
-                    text_list[i]+"\n\nAssistant: ")[0]
+                    text_list[i] + "\n\nAssistant: ")[0]
                 current_token_len += len(user_token)
                 user_end_positions.append(current_token_len)
                 user_assistant_tokens.append(user_token)
             else:  # 助手回复
-                assistant_token = self.tokenizer.encode(text_list[i])[0]+[0]
+                assistant_token = self.tokenizer.encode(text_list[i])[0] + [0]
                 current_token_len += len(assistant_token)
                 user_assistant_tokens.append(assistant_token)
 

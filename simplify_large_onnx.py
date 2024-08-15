@@ -2,8 +2,8 @@ import argparse
 import os
 import onnx
 from onnxsim import simplify
-from torchrwkv.onnx_utils import set_onnx_input_shape
-from torchrwkv.compress_model import SIZE_1MB, compress_onnx_model, uncompress_onnx_model
+from rwkvkit.onnx_utils import set_onnx_input_shape
+from rwkvkit.compress_model import SIZE_1MB, compress_onnx_model, uncompress_onnx_model
 
 
 def simplify_large_onnx(args):

@@ -1,11 +1,12 @@
-########################################################################################################
+##########################################################################
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
-########################################################################################################
+##########################################################################
 
 class TRIE:
     __slots__ = tuple("ch,to,values,front".split(","))
-    to:list
-    values:set
+    to: list
+    values: set
+
     def __init__(self, front=None, ch=None):
         self.ch = ch
         self.to = [None for ch in range(256)]
@@ -15,41 +16,42 @@ class TRIE:
     def __repr__(self):
         fr = self
         ret = []
-        while(fr!=None):
-            if(fr.ch!=None):
+        while (fr is not None):
+            if (fr.ch is not None):
                 ret.append(fr.ch)
             fr = fr.front
-        return "<TRIE %s %s>"%(ret[::-1], self.values)
-    
-    def add(self, key:bytes, idx:int=0, val=None):
-        if(idx == len(key)):
-            if(val is None):
+        return "<TRIE %s %s>" % (ret[::-1], self.values)
+
+    def add(self, key: bytes, idx: int = 0, val=None):
+        if (idx == len(key)):
+            if (val is None):
                 val = key
             self.values.add(val)
             return self
         ch = key[idx]
-        if(self.to[ch] is None):
+        if (self.to[ch] is None):
             self.to[ch] = TRIE(front=self, ch=ch)
-        return self.to[ch].add(key, idx=idx+1, val=val)
-    
-    def find_longest(self, key:bytes, idx:int=0):
-        u:TRIE = self
-        ch:int = key[idx]
-        
-        while(u.to[ch] is not None):
+        return self.to[ch].add(key, idx=idx + 1, val=val)
+
+    def find_longest(self, key: bytes, idx: int = 0):
+        u: TRIE = self
+        ch: int = key[idx]
+
+        while (u.to[ch] is not None):
             u = u.to[ch]
             idx += 1
-            if(u.values):
+            if (u.values):
                 ret = idx, u, u.values
-            if(idx==len(key)):
+            if (idx == len(key)):
                 break
             ch = key[idx]
         return ret
 
+
 class RWKV_TOKENIZER():
     def __init__(self, file_name):
         self.idx2token = {}
-        sorted = [] # must be already sorted
+        sorted = []  # must be already sorted
         with open(file_name, "r", encoding="utf-8") as f:
             lines = f.readlines()
         for l in lines:
@@ -62,7 +64,7 @@ class RWKV_TOKENIZER():
             self.idx2token[idx] = x
 
         self.token2idx = {}
-        for k,v in self.idx2token.items():
+        for k, v in self.idx2token.items():
             self.token2idx[v] = int(k)
 
         # 生成的某些 token 的索引值为 0,但是在 idx2token 字典中并没有对应的条目。
@@ -71,21 +73,21 @@ class RWKV_TOKENIZER():
         for t, i in self.token2idx.items():
             _ = self.root.add(t, val=(t, i))
 
-    def encodeBytes(self, src:bytes):
-        idx:int = 0
+    def encodeBytes(self, src: bytes):
+        idx: int = 0
         tokens = []
         while (idx < len(src)):
-            _idx:int = idx
+            _idx: int = idx
             idx, _, values = self.root.find_longest(src, idx)
-            assert(idx != _idx)
-            _, token = next(iter(values))            
+            assert (idx != _idx)
+            _, token = next(iter(values))
             tokens.append(token)
         return tokens
 
     def decodeBytes(self, tokens):
         try:
             return b''.join(map(lambda i: self.idx2token[i], tokens))
-        except:
+        except BaseException:
             return rb'\ufffd'
 
     def encode(self, src):
@@ -95,7 +97,10 @@ class RWKV_TOKENIZER():
             return [self.encodeBytes(s.encode("utf-8")) for s in src]
 
     def decode(self, tokens):
-        return [self.decodeBytes(batch).decode('utf-8', errors='replace') for batch in tokens]
+        return [
+            self.decodeBytes(batch).decode(
+                'utf-8',
+                errors='replace') for batch in tokens]
         # try:
         #     return self.decodeBytes(tokens).decode('utf-8')
         # except:
@@ -106,7 +111,7 @@ class RWKV_TOKENIZER():
             s = self.idx2token[i]
             try:
                 s = s.decode('utf-8')
-            except:
+            except BaseException:
                 pass
             print(f'{repr(s)}{i}', end=' ')
         print()

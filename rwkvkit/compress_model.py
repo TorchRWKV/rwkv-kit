@@ -2,8 +2,8 @@ import sys
 import logging
 import json
 import onnx
-from torchrwkv.onnx_utils import get_onnx_tensor_proto_dtype, get_onnx_tensor_proto_shape, create_const_of_shape
-from torchrwkv.onnx_utils import del_onnx_initializers, insert_onnx_nodes, add_onnx_inits, del_onnx_nodes, shape_elem_num
+from rwkvkit.onnx_utils import get_onnx_tensor_proto_dtype, get_onnx_tensor_proto_shape, create_const_of_shape
+from rwkvkit.onnx_utils import del_onnx_initializers, insert_onnx_nodes, add_onnx_inits, del_onnx_nodes, shape_elem_num
 
 SIZE_1MB = 1024 * 1024
 
@@ -84,7 +84,8 @@ def uncompress_onnx_model(onnx_model, removed_inits):
     print("recover_replaced_tensors:", recover_replaced_tensors)
 
     if len(replaced_tensor_names) != len(recover_replaced_tensors):
-        logging.error("replaced_tensor_names len != recover_replaced_tensors len")
+        logging.error(
+            "replaced_tensor_names len != recover_replaced_tensors len")
     if set(replaced_tensor_names) != set(recover_replaced_tensors):
         logging.error("replaced_tensor_names != recover_replaced_tensors")
 

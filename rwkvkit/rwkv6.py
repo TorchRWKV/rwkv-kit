@@ -1,18 +1,19 @@
 from einops import rearrange
-from torchrwkv.model_utils import RWKV_x060, RWKVConfig
+from rwkvkit.model_utils import RWKV_x060, RWKVConfig
 from typing import Tuple, Optional, List, Dict, Generator, Union
 import numpy as np
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import os
-from torchrwkv.rwkv_tokenizer import RWKV_TOKENIZER
-from torchrwkv.sampler import sample_logits
+from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
+from rwkvkit.sampler import sample_logits
 
 
 DISABLE_JIT = os.getenv("DISABLE_JIT", "0") == "1"
 JITMODULE = torch.jit.ScriptModule if not DISABLE_JIT else nn.Module
 JITSCRIPT = torch.jit.script_method if not DISABLE_JIT else lambda x: x
+
 
 class RWKV_Block(JITMODULE):
     """
@@ -24,7 +25,14 @@ class RWKV_Block(JITMODULE):
         n_head (int): 头数。
     """
 
-    def __init__(self, block_w: dict, n_embd: int, n_head: int, config: RWKVConfig, onnx_opset=16, kernel_function = None):
+    def __init__(
+            self,
+            block_w: dict,
+            n_embd: int,
+            n_head: int,
+            config: RWKVConfig,
+            onnx_opset=16,
+            kernel_function=None):
         super().__init__()
         self.n_embd = n_embd
         self.n_head = n_head
@@ -98,7 +106,12 @@ class RWKV_Block(JITMODULE):
         self.ffn_value.weight = nn.Parameter(block_w['ffn.value.weight'])
 
     @JITSCRIPT
-    def manual_layer_norm(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    def manual_layer_norm(
+            self,
+            x: torch.Tensor,
+            weight: torch.Tensor,
+            bias: torch.Tensor,
+            eps: float = 1e-5) -> torch.Tensor:
         """
         人工层归一化函数
         Args:
@@ -117,7 +130,13 @@ class RWKV_Block(JITMODULE):
         return x_shifted
 
     @JITSCRIPT
-    def manual_group_norm(self, x: torch.Tensor, num_groups: int, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    def manual_group_norm(
+            self,
+            x: torch.Tensor,
+            num_groups: int,
+            weight: torch.Tensor,
+            bias: torch.Tensor,
+            eps: float = 1e-5) -> torch.Tensor:
         """
         人工组归一化函数。
         Args:
@@ -146,7 +165,11 @@ class RWKV_Block(JITMODULE):
         return x_shifted
 
     @JITSCRIPT
-    def channel_mixing(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def channel_mixing(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int) -> torch.Tensor:
         """
         通道混合函数。
 
@@ -169,7 +192,12 @@ class RWKV_Block(JITMODULE):
         return output
 
     @JITSCRIPT
-    def channel_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool) -> torch.Tensor:
+    def channel_mixing_parallel(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int,
+            training: bool) -> torch.Tensor:
         """
         并行通道混合函数
         Args:
@@ -195,12 +223,18 @@ class RWKV_Block(JITMODULE):
         xr = torch.addcmul(x, sx_lerp, self.ffn_time_maa_r)
 
         r = torch.sigmoid(self.ffn_receptance(xr))  # [Batch, L, n_embd]
-        k = torch.relu(self.ffn_key(xk)).pow_(2) if not training else torch.relu(self.ffn_key(xk)).pow(2)
+        k = torch.relu(
+            self.ffn_key(xk)).pow_(2) if not training else torch.relu(
+            self.ffn_key(xk)).pow(2)
 
         output = r * self.ffn_value(k)
         return output
 
-    def time_mixing(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def time_mixing(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int) -> torch.Tensor:
         """
         时间混合函数。
 
@@ -220,7 +254,10 @@ class RWKV_Block(JITMODULE):
         else:
             x = x.flatten(start_dim=1)
             x = self.manual_group_norm(
-                x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias) * g
+                x,
+                num_groups=H,
+                weight=self.att_group_norm_weight,
+                bias=self.att_group_norm_bias) * g
             x = self.att_output(x)
         # 应用输出层并返回结果
         return x
@@ -258,19 +295,26 @@ class RWKV_Block(JITMODULE):
         g = self.silu(self.att_gate(xg))
 
         # 使用注意力机制更新状态
-        s = state[:, (2+S)*i+2:(2+S)*(i+1), :].view(batch_size, H, S, S)
+        s = state[:, (2 + S) * i + 2:(2 + S) * (i + 1),
+                  :].view(batch_size, H, S, S)
         a = k @ v
         x = r @ torch.addcmul(s, self.att_time_faaaa, a)
         s = torch.addcmul(a, torch.exp(w), s)
         # 更新第i层STATE的注意力参数
-        state[:, (2+S)*i+2:(2+S)*(i+1), :] = s.view(batch_size, S, -1)
+        state[:, (2 + S) * i + 2:(2 + S) * (i + 1),
+              :] = s.view(batch_size, S, -1)
         return x, state, g
 
     @JITSCRIPT
     def time_mixing_jit2(self, x: torch.Tensor, g):
         return self.att_output(self.att_group_norm(x.flatten(start_dim=1)) * g)
 
-    def time_mixing_parallel(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool = False) -> torch.Tensor:
+    def time_mixing_parallel(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int,
+            training: bool = False) -> torch.Tensor:
         """
         并行处理的时间混合函数。
         Args:
@@ -290,15 +334,23 @@ class RWKV_Block(JITMODULE):
             x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
         else:
             x = x.flatten(start_dim=2).view(batch_size * L, -1)
-            x = self.manual_group_norm(x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias).view(
+            x = self.manual_group_norm(
+                x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias).view(
                 batch_size, L, -1) * g  # 因为组归一化强制要求Channel维度在第二个维度
             x = self.att_output(x)
 
         return x
 
     @JITSCRIPT
-    def time_mixing_parallel_jit1(self, x: torch.Tensor, state: torch.Tensor, i: int,
-                                  batch_size: int, L: int, H: int, S: int):
+    def time_mixing_parallel_jit1(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int,
+            batch_size: int,
+            L: int,
+            H: int,
+            S: int):
         i1 = (2 + S) * i + 1
         # 初始化结果张量
         sx_lerp, xxx = torch.empty_like(x), torch.empty_like(x)
@@ -335,9 +387,20 @@ class RWKV_Block(JITMODULE):
 
         return r, w, k, v, g, state
 
-    def apply_time_mixxing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
-                                  v: torch.Tensor, state: torch.Tensor, i: int,
-                                  batch_size: int, L: int, H: int, S: int, backend: str = "torch", training: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def apply_time_mixxing_kernel(self,
+                                  r: torch.Tensor,
+                                  w: torch.Tensor,
+                                  k: torch.Tensor,
+                                  v: torch.Tensor,
+                                  state: torch.Tensor,
+                                  i: int,
+                                  batch_size: int,
+                                  L: int,
+                                  H: int,
+                                  S: int,
+                                  backend: str = "torch",
+                                  training: bool = False) -> Tuple[torch.Tensor,
+                                                                   torch.Tensor]:
         """
         Apply the time mixing kernel operation with support for multiple backend implementations.
 
@@ -373,8 +436,10 @@ class RWKV_Block(JITMODULE):
                 x (torch.Tensor): Output tensor
                 state (torch.Tensor): Updated state tensor
         """
-        s = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S)
-        # we dont want to support cuda, since it is only supported by nvidia and AMD
+        s = state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
+                  ].view(batch_size, H, S, S)
+        # we dont want to support cuda, since it is only supported by nvidia
+        # and AMD
         if backend != "torch":
             u = self.att_time_faaaa.view(self.n_head, self.head_size)
             r = rearrange(r.squeeze(-1), 'b l (h d) -> b h l d', h=H)
@@ -386,38 +451,65 @@ class RWKV_Block(JITMODULE):
             o, state_layer = self.kernel_function(
                 r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True, training=training)
             x = rearrange(o, 'b h l d -> b l (h d)')
-            state[:, (2+S)*i+2:(2+S)*(i+1)
+            state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
                   ] = state_layer.view(batch_size, S, -1)
 
         else:
             x, state_layer = self.native_torch_time_mixing_kernel(
                 r, w, k, v, s, batch_size, L, H, S)
-            state[:, (2+S)*i+2:(2+S)*(i+1)
+            state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
                   ] = state_layer.view(batch_size, S, -1)
         return x, state
 
     @JITSCRIPT
-    def native_torch_time_mixing_kernel(self, r: torch.Tensor, w: torch.Tensor, k: torch.Tensor,
-                                        v: torch.Tensor, s: torch.Tensor, batch_size: int,
-                                        L: int, H: int, S: int):
+    def native_torch_time_mixing_kernel(
+            self,
+            r: torch.Tensor,
+            w: torch.Tensor,
+            k: torch.Tensor,
+            v: torch.Tensor,
+            s: torch.Tensor,
+            batch_size: int,
+            L: int,
+            H: int,
+            S: int):
         a = k.view(batch_size, L, H, S, 1) @ v.view(batch_size,
                                                     L, H, 1, S)  # a: [batch_size, L, H, S, S]
         w = torch.exp(w)
-        state_s = torch.zeros(batch_size, L+1, H, S, S,
+        state_s = torch.zeros(batch_size, L + 1, H, S, S,
                               dtype=s.dtype, device=s.device)
         state_s[:, 0] = s
         for l in range(L):
-            state_s[:, l+1] = torch.addcmul(a[:, l], w[:, l], state_s[:, l])
-        x = r.view(batch_size, L, H, 1,
-                   S) @ torch.addcmul(state_s[:, :-1, :, :, :], self.att_time_faaaa, a)
+            state_s[:, l + 1] = torch.addcmul(a[:, l], w[:, l], state_s[:, l])
+        x = r.view(batch_size,
+                   L,
+                   H,
+                   1,
+                   S) @ torch.addcmul(state_s[:,
+                                              :-1,
+                                              :,
+                                              :,
+                                              :],
+                                      self.att_time_faaaa,
+                                      a)
         return x, state_s[:, -1].view(batch_size, S, -1)
 
     @JITSCRIPT
-    def time_mixing_parallel_jit2(self, x: torch.Tensor, g: torch.Tensor, batch_size: int, L: int):
-        return self.att_output(self.att_group_norm(x.flatten(start_dim=2).view(batch_size * L, -1)).view(batch_size, L, -1) * g)
+    def time_mixing_parallel_jit2(
+            self,
+            x: torch.Tensor,
+            g: torch.Tensor,
+            batch_size: int,
+            L: int):
+        return self.att_output(self.att_group_norm(x.flatten(
+            start_dim=2).view(batch_size * L, -1)).view(batch_size, L, -1) * g)
 
     @torch.no_grad()
-    def forward(self, x: torch.Tensor, state: torch.Tensor, i: int) -> torch.Tensor:
+    def forward(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int) -> torch.Tensor:
         """
         模型的前向传播。
         Args:
@@ -437,7 +529,12 @@ class RWKV_Block(JITMODULE):
                                         self.ln2_weight, self.ln2_bias, 1e-5), state, i)
         return x
 
-    def forward_prefill(self, x: torch.Tensor, state: torch.Tensor, i: int, training: bool = False) -> torch.Tensor:
+    def forward_prefill(
+            self,
+            x: torch.Tensor,
+            state: torch.Tensor,
+            i: int,
+            training: bool = False) -> torch.Tensor:
         """
         模型的并行前向传播。
         Args:
@@ -449,7 +546,8 @@ class RWKV_Block(JITMODULE):
         """
         if self.onnx_opset >= 17:
             x = x + self.time_mixing_parallel(self.ln1(x), state, i, training)
-            x = x + self.channel_mixing_parallel(self.ln2(x), state, i, training)
+            x = x + \
+                self.channel_mixing_parallel(self.ln2(x), state, i, training)
         else:
             x = x + self.time_mixing_parallel(self.manual_layer_norm(
                 x, self.ln1_weight, self.ln1_bias, 1e-5), state, i, training)
@@ -472,24 +570,24 @@ class RWKV6(JITMODULE):
         self.tokenizer = RWKV_TOKENIZER(self.config.vocab_file)
         try:
             self.onnx_opset_version = int(self.config.onnx_opset_version)
-        except:
+        except BaseException:
             self.onnx_opset_version = 16  # 默认是最低的，op17版本才支持LayerNorm算子，op18版本才支持GroupNorm算子
 
         self.data_format = self.config.data_format
         assert self.data_format in ['fp32', 'fp16', 'bf16']
-        assert self.config.prefill_kernel in ["torch", "triton", "triton-chunk", "manual-torch"]
+        assert self.config.prefill_kernel in [
+            "torch", "triton", "triton-chunk", "manual-torch"]
         if self.config.prefill_kernel == "manual-torch":
-            from fla.ops.rwkv6.recurrent_naive import native_recurrent_rwkv6
+            from rwkvkit.ops.rwkv6 import native_recurrent_rwkv6
             self.kernel_func = native_recurrent_rwkv6
         elif self.config.prefill_kernel == "triton":
             from fla.ops.rwkv6 import chunk_rwkv6, fused_recurrent_rwkv6
             self.kernel_func = fused_recurrent_rwkv6
-        elif  self.config.prefill_kernel == "triton-chunk":
+        elif self.config.prefill_kernel == "triton-chunk":
             from fla.ops.rwkv6 import chunk_rwkv6
             self.kernel_func = chunk_rwkv6
         else:
             self.kernel_func = None
-
 
         # 加载权重
         if self.config.init_model:
@@ -558,8 +656,14 @@ class RWKV6(JITMODULE):
             # 提取当前块的权重
             block_w = {k[len(f'blocks.{i}.'):]: v for k,
                        v in w.items() if f'blocks.{i}.' in k}
-            self.blocks.append(RWKV_Block(
-                block_w, self.n_embd, self.n_head, self.config, self.onnx_opset_version, self.kernel_func))
+            self.blocks.append(
+                RWKV_Block(
+                    block_w,
+                    self.n_embd,
+                    self.n_head,
+                    self.config,
+                    self.onnx_opset_version,
+                    self.kernel_func))
 
         if self.onnx_opset_version >= 17:
             self.ln_out = nn.LayerNorm(self.n_embd)
@@ -573,7 +677,12 @@ class RWKV6(JITMODULE):
         self.head.weight = nn.Parameter(w['head.weight'])
 
     @JITSCRIPT
-    def manual_layer_norm(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    def manual_layer_norm(
+            self,
+            x: torch.Tensor,
+            weight: torch.Tensor,
+            bias: torch.Tensor,
+            eps: float = 1e-5) -> torch.Tensor:
         """
         人工层归一化函数
         Args:
@@ -592,7 +701,10 @@ class RWKV6(JITMODULE):
         return x_shifted
 
     @torch.no_grad
-    def forward(self, token: torch.Tensor, state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self,
+                token: torch.Tensor,
+                state: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor,
+                                                               torch.Tensor]:
         if state is None:
             state = self.init_state(token.size(0))
         if token.dim() == 1:
@@ -601,13 +713,20 @@ class RWKV6(JITMODULE):
             out, state = self.forward_prefill(token, state)
             out = out[:, -1]
         else:
-            out, state = self.forward_prefill_chunks(token, state, self.config.chunk_size)
+            out, state = self.forward_prefill_chunks(
+                token, state, self.config.chunk_size)
             out = out[:, -1]
         return out, state
 
     @torch.no_grad
-    def chat(self, messages: List[Dict[str, str]], max_len: int = 512, temperature: float=1.0,
-             top_p: float=0.6, end_id: int = 0, stream: bool = False) -> List[str]:
+    def chat(self,
+             messages: List[Dict[str,
+                                 str]],
+             max_len: int = 512,
+             temperature: float = 1.0,
+             top_p: float = 0.6,
+             end_id: int = 0,
+             stream: bool = False) -> List[str]:
         """
         聊天函数。
         Args:
@@ -617,7 +736,14 @@ class RWKV6(JITMODULE):
             List[str]: 生成的回复列表。
         """
         prompt = self.apply_chat_temple(messages)
-        return self.generate(prompt, max_len, temperature, top_p, end_id, include_prompt=False, stream=stream)
+        return self.generate(
+            prompt,
+            max_len,
+            temperature,
+            top_p,
+            end_id,
+            include_prompt=False,
+            stream=stream)
 
     def apply_chat_temple(self, messages: List[str]) -> str:
         prompt = ""
@@ -632,19 +758,37 @@ class RWKV6(JITMODULE):
         return prompt
 
     @torch.no_grad
-    def generate(self, prompt: str, max_len: int = 512, temperature: float=1.0,
-                 top_p: float=0.6, end_id: int = 0, include_prompt = True,
-                 stream: bool = False, stop=['\n\nUser', '<|endoftext|>']) -> Union[str, Generator[str, None, None]]:
+    def generate(self,
+                 prompt: str,
+                 max_len: int = 512,
+                 temperature: float = 1.0,
+                 top_p: float = 0.6,
+                 end_id: int = 0,
+                 include_prompt=True,
+                 stream: bool = False,
+                 stop=['\n\nUser',
+                       '<|endoftext|>']) -> Union[str,
+                                                  Generator[str,
+                                                            None,
+                                                            None]]:
         state = self.init_state(1)
-        end_tensor = torch.tensor(end_id, dtype=torch.long, device=self.config.device)
-        token_full = torch.tensor(self.tokenizer.encode([prompt]), dtype=torch.long, device=self.config.device)
+        end_tensor = torch.tensor(
+            end_id,
+            dtype=torch.long,
+            device=self.config.device)
+        token_full = torch.tensor(
+            self.tokenizer.encode(
+                [prompt]),
+            dtype=torch.long,
+            device=self.config.device)
 
         out, state = self.forward_prefill(token_full, state)
         token = sample_logits(out[:, -1], temperature, top_p)
         token_first_time = token
 
         if include_prompt:
-            token_full = torch.cat([token_full, token_first_time.unsqueeze(1)], dim=1)
+            token_full = torch.cat(
+                [token_full, token_first_time.unsqueeze(1)], dim=1)
         else:
             token_full = token_first_time.unsqueeze(1)
 
@@ -670,8 +814,10 @@ class RWKV6(JITMODULE):
                 response = response.split(s)[0]
             return response
 
-
-    def forward_autoregressive(self, token: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_autoregressive(self,
+                               token: torch.Tensor,
+                               state: torch.Tensor) -> Tuple[torch.Tensor,
+                                                             torch.Tensor]:
         """
         模型的前向传播。
         Args:
@@ -697,7 +843,11 @@ class RWKV6(JITMODULE):
             x = self.head(x)
         return x, state
 
-    def forward_prefill(self, token: torch.Tensor, state: torch.Tensor, training: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_prefill(self,
+                        token: torch.Tensor,
+                        state: torch.Tensor,
+                        training: bool = False) -> Tuple[torch.Tensor,
+                                                         torch.Tensor]:
         """
         模型的并行前向传播。
         Args:
@@ -731,7 +881,11 @@ class RWKV6(JITMODULE):
         return self.head(self.ln_out(x))
 
     @torch.no_grad()
-    def forward_prefill_chunks(self, token: torch.Tensor, state: torch.Tensor, slice_len: int = 64) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_prefill_chunks(self,
+                               token: torch.Tensor,
+                               state: torch.Tensor,
+                               slice_len: int = 64) -> Tuple[torch.Tensor,
+                                                             torch.Tensor]:
         """
         模型的分段并行前向传播，减少显存/内存使用。
         Args:
@@ -741,9 +895,9 @@ class RWKV6(JITMODULE):
             torch.Tensor: 模型输出。
         """
         data_len = token.shape[1]
-        for i in range((data_len-2)//slice_len+1):
-            start = i*slice_len
-            end = min((i+1)*slice_len, data_len)
+        for i in range((data_len - 2) // slice_len + 1):
+            start = i * slice_len
+            end = min((i + 1) * slice_len, data_len)
             token_i = token[:, start:end]
             token_out, state = self.forward_prefill(token_i, state)
 
@@ -763,10 +917,10 @@ class RWKV6(JITMODULE):
         # 这里把训练好的state加载进去
         if self.config.state_path != '':
             STATE = torch.load(self.config.state_path.replace(
-                ".pth", "")+'.pth', map_location=torch.device("cpu"))
+                ".pth", "") + '.pth', map_location=torch.device("cpu"))
             head_size = self.head_size
             for i, (key, value) in enumerate(STATE.items()):
-                state[:, ((2 + head_size)*i + 2):((2 + head_size)*(i + 1)),
+                state[:, ((2 + head_size) * i + 2):((2 + head_size) * (i + 1)),
                       :] = value.contiguous().permute(0, 2, 1).reshape(head_size, -1)
 
         if self.data_format == 'fp16':
@@ -802,7 +956,7 @@ class RWKV6(JITMODULE):
             STATE[f'blocks.{i}.att.time_state'] = layer_state.contiguous().view(
                 n_head, head_size, head_size).permute(0, 1, 2)
 
-        if bf16 == True:
+        if bf16:
             for key in STATE.keys():
                 STATE[key] = STATE[key].bfloat16()
         else:
@@ -903,7 +1057,9 @@ class RWKV6(JITMODULE):
                     state_dict[name].shape[0], state_dict[name].shape[1])
             elif '.time_maa_w2' in name:
                 state_dict[name] = state_dict[name].view(
-                    state_dict[name].shape[0], state_dict[name].shape[1], state_dict[name].shape[2])
+                    state_dict[name].shape[0],
+                    state_dict[name].shape[1],
+                    state_dict[name].shape[2])
             elif 'att.time_maa_x' in name or 'att.time_maa_w' in name or 'att.time_maa_k' in name or 'att.time_maa_v' in name or 'att.time_maa_r' in name or 'att.time_maa_g' in name \
                     or 'ffn.time_maa_k' in name or 'ffn.time_maa_r' in name or 'time_decay' in name:
                 state_dict[name] = state_dict[name].view(
@@ -911,7 +1067,7 @@ class RWKV6(JITMODULE):
             else:
                 state_dict[name] = state_dict[name]
 
-        if bf16 == True:
+        if bf16:
             for key in state_dict.keys():
                 state_dict[key] = state_dict[key].bfloat16()
         else:

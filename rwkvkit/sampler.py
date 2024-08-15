@@ -4,8 +4,12 @@ import numpy as np
 from collections import defaultdict
 from typing import Optional, Tuple
 
+
 @torch.jit.script
-def _sample_logits_as_single(out: torch.Tensor, temperature: float = 1.0, top_p: float = 0.8) -> torch.Tensor:
+def _sample_logits_as_single(
+        out: torch.Tensor,
+        temperature: float = 1.0,
+        top_p: float = 0.8) -> torch.Tensor:
     """
     Sample from the logits tensor produced by the model.
 
@@ -25,7 +29,9 @@ def _sample_logits_as_single(out: torch.Tensor, temperature: float = 1.0, top_p:
         return torch.argmax(out, dim=-1)
 
     if top_p == 1.0:
-        return torch.multinomial(torch.nn.functional.softmax(out, dim=-1), num_samples=1).squeeze(1)
+        return torch.multinomial(
+            torch.nn.functional.softmax(
+                out, dim=-1), num_samples=1).squeeze(1)
 
     # Convert logits to log probabilities
     log_probabilities = torch.nn.functional.log_softmax(
@@ -38,7 +44,8 @@ def _sample_logits_as_single(out: torch.Tensor, temperature: float = 1.0, top_p:
     mask_remove = cumulative_log_probs > torch.log(
         torch.tensor(top_p, device=cumulative_log_probs.device))
 
-    # Set the probabilities of tokens to remove to a very small value (e.g., -1e10)
+    # Set the probabilities of tokens to remove to a very small value (e.g.,
+    # -1e10)
     log_probabilities = log_probabilities.masked_fill(mask_remove, -1e10)
 
     # Generate a single sample
@@ -47,16 +54,21 @@ def _sample_logits_as_single(out: torch.Tensor, temperature: float = 1.0, top_p:
 
     return sampled_index
 
+
 @torch.jit.script
-def _sample_logits_as_batch(out: torch.Tensor, temperature: torch.Tensor, top_p: torch.Tensor, sampled_indices: torch.Tensor) -> torch.Tensor:
+def _sample_logits_as_batch(
+        out: torch.Tensor,
+        temperature: torch.Tensor,
+        top_p: torch.Tensor,
+        sampled_indices: torch.Tensor) -> torch.Tensor:
     assert (temperature > 0).all(), "Temperature should be positive"
-    assert (0 <= top_p).all() and (top_p <= 1).all(), "Top-p should be in the range [0, 1]"
+    assert (
+        0 <= top_p).all() and (
+        top_p <= 1).all(), "Top-p should be in the range [0, 1]"
 
     # Handle top_p == 0.0 and top_p == 1.0 cases
     argmax_mask = (top_p == 0.0)
     standard_mask = (top_p == 1.0)
-
-
 
     # Handle argmax case
     if argmax_mask.any():
@@ -64,8 +76,10 @@ def _sample_logits_as_batch(out: torch.Tensor, temperature: torch.Tensor, top_p:
 
     # Handle standard sampling case
     if standard_mask.any():
-        standard_probs = torch.nn.functional.softmax(out[standard_mask] / temperature[standard_mask].unsqueeze(1), dim=-1)
-        sampled_indices[standard_mask] = torch.multinomial(standard_probs, num_samples=1).squeeze(1)
+        standard_probs = torch.nn.functional.softmax(
+            out[standard_mask] / temperature[standard_mask].unsqueeze(1), dim=-1)
+        sampled_indices[standard_mask] = torch.multinomial(
+            standard_probs, num_samples=1).squeeze(1)
 
     # Handle top_p sampling for the rest
     top_p_mask = ~(argmax_mask | standard_mask)
@@ -75,7 +89,8 @@ def _sample_logits_as_batch(out: torch.Tensor, temperature: torch.Tensor, top_p:
             out[top_p_mask] / temperature[top_p_mask].unsqueeze(1), dim=-1)
 
         # Compute the cumulative probabilities
-        sorted_logits, sorted_indices = torch.sort(log_probs, descending=True, dim=-1)
+        sorted_logits, sorted_indices = torch.sort(
+            log_probs, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(torch.exp(sorted_logits), dim=-1)
 
         # Create a mask to identify the tokens to remove based on top_p
@@ -90,12 +105,17 @@ def _sample_logits_as_batch(out: torch.Tensor, temperature: torch.Tensor, top_p:
         sampled = torch.multinomial(probs, num_samples=1).squeeze(1)
 
         # Map back to original vocab indices
-        sampled_indices[top_p_mask] = torch.gather(sorted_indices, 1, sampled.unsqueeze(1)).squeeze(1)
+        sampled_indices[top_p_mask] = torch.gather(
+            sorted_indices, 1, sampled.unsqueeze(1)).squeeze(1)
 
     return sampled_indices
 
-def sample_logits(out: torch.Tensor, temperature: float | torch.Tensor = 1.0
-                  , top_p: float | torch.Tensor = 0.8, use_cpu: bool = False) -> torch.Tensor:
+
+def sample_logits(
+        out: torch.Tensor,
+        temperature: float | torch.Tensor = 1.0,
+        top_p: float | torch.Tensor = 0.8,
+        use_cpu: bool = False) -> torch.Tensor:
     """
     Sample from the logits tensor produced by the model, with batch support for different temperature and top_p values.
 
@@ -116,16 +136,20 @@ def sample_logits(out: torch.Tensor, temperature: float | torch.Tensor = 1.0
         dtype = out.dtype
         # Ensure all tensors are on CPU
         if not isinstance(temperature, torch.Tensor):
-            temperature = torch.full((batch_size,), float(temperature), dtype=dtype, device=out.device)
+            temperature = torch.full((batch_size,), float(
+                temperature), dtype=dtype, device=out.device)
         if not isinstance(top_p, torch.Tensor):
-            top_p = torch.full((batch_size,), float(top_p), dtype=dtype, device=out.device)
+            top_p = torch.full((batch_size,), float(
+                top_p), dtype=dtype, device=out.device)
 
         if use_cpu:
             out, temperature, top_p = out.cpu(), temperature.cpu(), top_p.cpu()
 
         # Prepare results tensor
-        sampled_indices = torch.zeros(batch_size, dtype=torch.long, device=out.device)
-        return _sample_logits_as_batch(out, temperature, top_p, sampled_indices).to(device_o)
+        sampled_indices = torch.zeros(
+            batch_size, dtype=torch.long, device=out.device)
+        return _sample_logits_as_batch(
+            out, temperature, top_p, sampled_indices).to(device_o)
 
 
 def apply_penalties(
@@ -152,7 +176,8 @@ def apply_penalties(
         logits = torch.where(mask, logits - presence_penalty, logits)
 
         # 根据token的出现频率施加频率惩罚
-        freq_penalties = torch.tensor([freq_dict[i] for i in range(len(logits))], dtype=logits.dtype, device=logits.device)
+        freq_penalties = torch.tensor([freq_dict[i] for i in range(
+            len(logits))], dtype=logits.dtype, device=logits.device)
         # 缩放频率惩罚,并裁剪到[0, 1]范围内
         freq_penalties = torch.clamp(freq_penalties / len(freq_dict), 0, 1)
         logits -= frequency_penalty * freq_penalties
@@ -170,7 +195,10 @@ def apply_penalties(
     return token_sampled, token, freq_dict
 
 
-def sample_logits_numpy(out: np.ndarray, temperature: float = 1.0, top_p: float = 0.8) -> np.ndarray:
+def sample_logits_numpy(
+        out: np.ndarray,
+        temperature: float = 1.0,
+        top_p: float = 0.8) -> np.ndarray:
     """
     对模型输出的logits进行采样。
 
@@ -221,7 +249,15 @@ def sample_logits_numpy(out: np.ndarray, temperature: float = 1.0, top_p: float 
     return sampled_index
 
 
-def apply_penalties_numpy(logits: np.ndarray, presence_penalty: float, temperature: float, top_p: float, frequency_penalty: float, token: Optional[np.ndarray] = None, freq_dict: Optional[defaultdict] = None) -> Tuple[np.ndarray, np.ndarray, defaultdict]:
+def apply_penalties_numpy(logits: np.ndarray,
+                          presence_penalty: float,
+                          temperature: float,
+                          top_p: float,
+                          frequency_penalty: float,
+                          token: Optional[np.ndarray] = None,
+                          freq_dict: Optional[defaultdict] = None) -> Tuple[np.ndarray,
+                                                                            np.ndarray,
+                                                                            defaultdict]:
     if freq_dict is None:
         freq_dict = defaultdict(int)
 
@@ -234,12 +270,14 @@ def apply_penalties_numpy(logits: np.ndarray, presence_penalty: float, temperatu
         logits = np.where(mask, logits - presence_penalty, logits)
 
         # 根据token的出现频率施加频率惩罚
-        freq_penalties = np.array([freq_dict[i] for i in range(len(logits))], dtype=logits.dtype)
+        freq_penalties = np.array(
+            [freq_dict[i] for i in range(len(logits))], dtype=logits.dtype)
         # 缩放频率惩罚,并裁剪到[0, 1]范围内
         freq_penalties = np.clip(freq_penalties / len(freq_dict), 0, 1)
         logits -= frequency_penalty * freq_penalties
 
-    token_sampled = sample_logits_numpy(logits, temperature=temperature, top_p=top_p)
+    token_sampled = sample_logits_numpy(
+        logits, temperature=temperature, top_p=top_p)
 
     # 更新频率字典
     freq_dict[token_sampled.item()] += 1

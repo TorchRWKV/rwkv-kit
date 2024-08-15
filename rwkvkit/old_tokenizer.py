@@ -5,6 +5,7 @@ class RWKV_TOKENIZER():
     Args:
         file_name (str): 词汇表文件名。
     """
+
     def __init__(self, file_name: str):
         self.idx2token = {}
         self.token2idx = {}
@@ -17,9 +18,11 @@ class RWKV_TOKENIZER():
                 parts = line.strip().split(' ')
                 idx = int(parts[0])
                 length = int(parts[-1])
-                token = ' '.join(parts[1:-1])  # Join all parts except the first and last to get the token
+                # Join all parts except the first and last to get the token
+                token = ' '.join(parts[1:-1])
                 token = eval(token)
-                token = token.encode("utf-8") if isinstance(token, str) else token
+                token = token.encode(
+                    "utf-8") if isinstance(token, str) else token
                 assert isinstance(token, bytes)
                 assert len(token) == length
                 self.idx2token[idx] = token
@@ -42,14 +45,15 @@ class RWKV_TOKENIZER():
             match = False
             for length in range(self.max_len, 0, -1):
                 if i + length <= len(src):
-                    s = src[i:i+length]
+                    s = src[i:i + length]
                     if s in self.token2idx:
                         tokens.append(self.token2idx[s])
                         i += length
                         match = True
                         break
             if not match:
-                tokens.append(self.token2idx.get(src[i:i+1], self.token2idx.get(b'<unk>')))
+                tokens.append(self.token2idx.get(
+                    src[i:i + 1], self.token2idx.get(b'<unk>')))
                 i += 1
         return tokens
 

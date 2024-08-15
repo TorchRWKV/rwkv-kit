@@ -1,7 +1,7 @@
 import time
 import os
 import torch
-from torchrwkv import RWKV6, RWKVConfig, sample_logits
+from rwkvkit import RWKV6, RWKVConfig, sample_logits
 
 if __name__ == '__main__':
     config = RWKVConfig(model_path='weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth',
