@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
 from rwkvkit.rwkv6 import RWKV6
+from rwkvkit.train.utils import loss_with_mask
 import torch
 from torch.optim.lr_scheduler import LinearLR
 import torch.nn.functional as F
@@ -70,7 +71,10 @@ class MaskTextDataset(Dataset):
 
 
         # 填充 user_end_positions 到 self.prefill_lenth
-        if len(user_end_positions) < self.prefill_lenth:
+        if len(user_end_positions) == 0:
+            user_end_positions = [self.prefill_lenth - 1] * 64
+            mask[:] = True
+        elif len(user_end_positions) < self.prefill_lenth:
             user_end_positions = user_end_positions * (64 // len(user_end_positions) + 1)
             user_end_positions = user_end_positions[:64]
 
@@ -131,9 +135,9 @@ class MaskTextDataset(Dataset):
 
 from rwkvkit.model_utils import RWKVConfig
 # 初始化模型参数
-config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
-                        state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
-                        prefill_kernel="triton",)
+config = RWKVConfig(model_path='weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth',
+                        # state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
+                        prefill_kernel="triton-chunk",)
 # seed = 42
 torch.manual_seed(42)
 
@@ -146,15 +150,15 @@ device = torch.device(config.device)
 tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
 print("Done.")
 
-file_path = 'weight/final_dataset.jsonl'  # 替换为你的文本文件路径
+file_path = './weight/random_result_doubao_0_dataset_1.jsonl'  # 替换为你的文本文件路径
 save_path = "./weight/rwkv-test-epoch-1.pth"
 # 设置续写的初始字符串和参数
 
 criterion = nn.CrossEntropyLoss()
-slice_len = 512
+slice_len = 1024
 batch_size = 1
-dataset = MaskTextDataset(file_path, ctx_len=2048, prefill=True, tokenizer=tokenizer)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+dataset = MaskTextDataset(file_path, ctx_len=128, prefill=True, tokenizer=tokenizer, method='right')
+dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 accumulation_steps = 5  # 每 10 步更新一次参数
 epochs = 6
 initial_state = model.init_state(batch_size=1).detach()
@@ -166,38 +170,6 @@ warmup_steps = 1000
 total_steps =  len(dataloader) * epochs
 optimizer = torch.optim.AdamW([initial_state], lr=lr_init)
 scheduler = LinearLR(optimizer, start_factor=lr_init, end_factor=lr_final, total_iters=warmup_steps)
-
-def loss_with_mask(logits, target, mask):
-    # 确保维度正确
-    batch_size, seq_length, num_classes = logits.size()
-
-    # 计算每个样本的有效长度
-    sample_lengths = mask.float().sum(dim=1)  # [batch_size]
-
-    # 重塑输入
-    logits = logits.view(-1, num_classes)  # [batch_size * seq_length, num_classes]
-    target = target.view(-1)  # [batch_size * seq_length]
-    mask = mask.view(-1)  # [batch_size * seq_length]
-
-    # 计算所有位置的交叉熵损失
-    ce_loss = F.cross_entropy(logits, target, reduction='none')  # [batch_size * seq_length]
-
-    # 应用mask
-    masked_loss = ce_loss * mask  # [batch_size * seq_length]
-
-    # 重塑回原始的batch维度
-    masked_loss = masked_loss.view(batch_size, seq_length)  # [batch_size, seq_length]
-
-    # 计算每个样本的总损失
-    sample_loss = masked_loss.sum(dim=1)  # [batch_size]
-
-    # 计算每个样本的平均损失，考虑样本长度
-    avg_loss = sample_loss / (sample_lengths + 1e-8)  # 添加小值以避免除零
-
-    # 计算整个batch的平均损失
-    batch_avg_loss = avg_loss.mean()
-
-    return batch_avg_loss
 
 
 for epoch in range(epochs):
@@ -230,6 +202,7 @@ for epoch in range(epochs):
                 current_slice_len = x_i.shape[1]
                 token_out, state = model.forward_prefill(x_i, state, training=True)
                 loss_i = loss_with_mask(token_out, y_i, mask[:, start:end])
+                print(loss_i)
                 loss_weight = loss_i * (current_slice_len / total_length)
                 loss += loss_weight
                 accumulated_loss += loss_weight.item()

@@ -1,13 +1,12 @@
 from einops import rearrange
 from rwkvkit.model_utils import RWKV_x060, RWKVConfig
 from typing import Tuple, Optional, List, Dict, Generator, Union
-import numpy as np
-import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import os
 from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
 from rwkvkit.sampler import sample_logits
+from torch.utils.checkpoint import checkpoint
 
 
 DISABLE_JIT = os.getenv("DISABLE_JIT", "0") == "1"
@@ -776,21 +775,15 @@ class RWKV6(JITMODULE):
             end_id,
             dtype=torch.long,
             device=self.config.device)
-        token_full = torch.tensor(
+        token = torch.tensor(
             self.tokenizer.encode(
                 [prompt]),
             dtype=torch.long,
             device=self.config.device)
 
-        out, state = self.forward_prefill(token_full, state)
+        out, state = self.forward_prefill(token, state)
         token = sample_logits(out[:, -1], temperature, top_p)
-        token_first_time = token
 
-        if include_prompt:
-            token_full = torch.cat(
-                [token_full, token_first_time.unsqueeze(1)], dim=1)
-        else:
-            token_full = token_first_time.unsqueeze(1)
 
         def token_generator(token: torch.Tensor, state: torch.Tensor):
             for i in range(max_len):
@@ -802,16 +795,21 @@ class RWKV6(JITMODULE):
 
         if stream:
             def stream_generator():
-                yield self.tokenizer.decode(token_first_time.unsqueeze(1).cpu().tolist())[0]
-                for t in token_generator(token_first_time, state):
+                yield self.tokenizer.decode(token.unsqueeze(1).cpu().tolist())[0]
+                for t in token_generator(token, state):
                     yield self.tokenizer.decode(t.unsqueeze(1).cpu().tolist())[0]
             return stream_generator()
         else:
-            for t in token_generator(token, state):
-                token_full = torch.cat([token_full, t.unsqueeze(1)], dim=1)
-            response = self.tokenizer.decode(token_full.cpu().tolist())[0]
+            token_response = torch.empty((1, max_len + 1), dtype=torch.long, device=self.config.device)
+            token_response[:, 0] = token
+            for i, t in enumerate(token_generator(token, state), start=1):
+                token_response[:, i] = t
+            token_response = token_response[:, :i + 1]
+            response = self.tokenizer.decode(token_response.cpu().tolist())[0]
             for s in stop:
                 response = response.split(s)[0]
+            if include_prompt:
+                response = prompt + response
             return response
 
     def forward_autoregressive(self,
@@ -843,6 +841,10 @@ class RWKV6(JITMODULE):
             x = self.head(x)
         return x, state
 
+    @staticmethod
+    def forward_prefill_wrapper(block, x, state, i, training):
+        return block.forward_prefill(x, state, i, training)
+
     def forward_prefill(self,
                         token: torch.Tensor,
                         state: torch.Tensor,
@@ -862,8 +864,12 @@ class RWKV6(JITMODULE):
             x = self.emb(token)
             x = self.manual_layer_norm(x, self.ln0_weight, self.ln0_bias, 1e-5)
         # 开始循环推理RWKV Block
-        for i, block in enumerate(self.blocks):
-            x = block.forward_prefill(x, state, i, training)
+        if training:
+            for i, block in enumerate(self.blocks):
+                x = checkpoint(self.forward_prefill_wrapper, block, x, state, i, True, use_reentrant=False)
+        else:
+            for i, block in enumerate(self.blocks):
+                x = block.forward_prefill(x, state, i, training)
         if self.onnx_opset_version >= 17:
             x = self.forward_jit2(x)
         else:

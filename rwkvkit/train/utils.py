@@ -144,37 +144,9 @@ class MaskTextDataset(Dataset):
         return input_output_tokens, user_assistant_tokens, user_end_positions
 
 
-def loss_with_mask(logits, target, mask):
-    # 确保维度正确
-    batch_size, seq_length, num_classes = logits.size()
-
-    # 计算每个样本的有效长度
-    sample_lengths = mask.float().sum(dim=1)  # [batch_size]
-
-    # 重塑输入
-    # [batch_size * seq_length, num_classes]
-    logits = logits.view(-1, num_classes)
-    target = target.view(-1)  # [batch_size * seq_length]
-    mask = mask.view(-1)  # [batch_size * seq_length]
-
-    # 计算所有位置的交叉熵损失
-    # [batch_size * seq_length]
-    ce_loss = F.cross_entropy(logits, target, reduction='none')
-
-    # 应用mask
-    masked_loss = ce_loss * mask  # [batch_size * seq_length]
-
-    # 重塑回原始的batch维度
-    masked_loss = masked_loss.view(
-        batch_size, seq_length)  # [batch_size, seq_length]
-
-    # 计算每个样本的总损失
-    sample_loss = masked_loss.sum(dim=1)  # [batch_size]
-
-    # 计算每个样本的平均损失，考虑样本长度
-    avg_loss = sample_loss / (sample_lengths + 1e-8)  # 添加小值以避免除零
-
-    # 计算整个batch的平均损失
-    batch_avg_loss = avg_loss.mean()
-
-    return batch_avg_loss
+def loss_with_mask(logits, target, response_mask):
+    # logits.shape = [bs, seq_len, vocab_size],  (seq_len=max_len - 1),    target.shape = [bs, seq_len]
+    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1), ignore_index=0, reduce=False)  # loss.shape = [bs * seq_len]
+    loss_mask = response_mask.view(-1) # [bs * seqlen]
+    loss = torch.sum(loss*loss_mask) / (loss_mask.sum() + 1e-8)
+    return loss
