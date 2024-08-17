@@ -1,7 +1,7 @@
 import time
 import os
 import torch
-from rwkvkit.rwkv6 import RWKV6
+from rwkvkit.utils.rwkv6 import RWKV6
 
 if __name__ == '__main__':
     # 初始化模型参数

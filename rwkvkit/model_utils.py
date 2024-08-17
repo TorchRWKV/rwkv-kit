@@ -17,6 +17,10 @@ from typing import Optional, Literal
 from importlib import resources
 
 
+JITMODULE = nn.Module
+JITSCRIPT = lambda x: x
+
+
 @dataclass
 class RWKVConfig:
     model_path: str
@@ -51,6 +55,11 @@ class RWKVConfig:
             except ImportError:
                 raise ImportError(
                     "Please install triton to use the triton prefill kernel.")
+        if self.use_jit:
+            global JITMODULE, JITSCRIPT
+            JITMODULE = torch.jit.ScriptModule if self.use_jit else nn.Module
+            JITSCRIPT = torch.jit.script_method if self.use_jit else lambda x: x
+
 
     def check_available_device(self):
         if torch.cuda.is_available():

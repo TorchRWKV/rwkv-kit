@@ -4,7 +4,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
-from rwkvkit.rwkv6 import RWKV6
+from rwkvkit.utils.rwkv6 import RWKV6
 import torch
 from torch.optim.lr_scheduler import LinearLR
 import torch.nn.functional as F

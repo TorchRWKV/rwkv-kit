@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify
 from flask import stream_with_context
-from rwkvkit.rwkv6 import RWKV6
+from rwkvkit.utils.rwkv6 import RWKV6
 import time
 import uuid
 import json

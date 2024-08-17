@@ -1,5 +1,5 @@
 from einops import rearrange
-from rwkvkit.model_utils import RWKV_x060, RWKVConfig
+from rwkvkit.model_utils import RWKV_x060, RWKVConfig, JITMODULE, JITSCRIPT
 from typing import Tuple, Optional, List, Dict, Generator, Union
 import torch.nn as nn
 import torch
@@ -9,9 +9,6 @@ from rwkvkit.sampler import sample_logits
 from torch.utils.checkpoint import checkpoint
 
 
-DISABLE_JIT = os.getenv("DISABLE_JIT", "0") == "1"
-JITMODULE = torch.jit.ScriptModule if not DISABLE_JIT else nn.Module
-JITSCRIPT = torch.jit.script_method if not DISABLE_JIT else lambda x: x
 
 
 class RWKV_Block(JITMODULE):
