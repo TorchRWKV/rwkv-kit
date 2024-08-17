@@ -42,17 +42,8 @@ Benchmark: (we use native torch to autoregress)
     import time
     import os
     import torch
-    from rwkv-kit.rwkv6 import RWKV6
-    from rwkv-kit.model_utils import RWKVConfig
-    from rwkv-kit.sampler import sample_logits
-    from rwkv-kit.rwkv_tokenizer import RWKV_TOKENIZER
-    config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
-                        state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
-                        prefill_kernel="triton-chunk",)
-    model = RWKV6(config=config)
-    # Please do not use torch.compile, since JIT is on by default
-    # Also, this will reduce the accuracy of the model by unknown reasons
-    # model = torch.compile(model)
+    from rwkvkit import rwkv6, sample_logits
+
     initial_string = """hello"""
     batch_size = 128
     TEMPERATURE = 1.0
@@ -63,7 +54,13 @@ Benchmark: (we use native torch to autoregress)
 
     encoded_input = model.tokenizer.encode([initial_string] * batch_size)
 
-    token = torch.tensor(encoded_input).long().to(config.device)  #
+    token = torch.tensor(encoded_input).long().to(model.device)  #
+    state = None
+    out, state = model.forward(token, state)
+    for step in range(LENGTH_PER_TRIAL):
+        token_sampled = sample_logits(out, TEMPERATURE, TOP_P)
+        out, state = model.forward(token_sampled, state)
+
     t1 = time.time()
     state = None
     out, state = model.forward(token, state)

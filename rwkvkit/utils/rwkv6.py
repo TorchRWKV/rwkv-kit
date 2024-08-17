@@ -563,6 +563,7 @@ class RWKV6(JITMODULE):
     def __init__(self, config: RWKVConfig):
         super().__init__()
         self.config = config
+        self.device = config.device
         self.tokenizer = RWKV_TOKENIZER(self.config.vocab_file)
         try:
             self.onnx_opset_version = int(self.config.onnx_opset_version)

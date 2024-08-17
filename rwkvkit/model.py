@@ -1,3 +1,4 @@
+import torch
 from typing import Optional, Literal
 from rwkvkit.model_utils import RWKVConfig
 
@@ -17,7 +18,8 @@ def rwkv6(
     n_layer: Optional[int] = 24,
     head_size_a: Optional[int] = 64,
     head_size_divisor: Optional[int] = 8,
-    vocab_file: Optional[str] = None
+    vocab_file: Optional[str] = None,
+    compile: Optional[bool] = False
 ):
     """
     Initialize and return an RWKV6 model with the specified configuration.
@@ -60,5 +62,6 @@ def rwkv6(
         vocab_file=vocab_file
     )
     from rwkvkit.utils.rwkv6 import RWKV6
-
+    if compile:
+        return torch.compile(RWKV6(config=config))
     return RWKV6(config=config)
