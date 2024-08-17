@@ -646,7 +646,7 @@ class RWKV6(JITMODULE):
             self.ln0_weight = nn.Parameter(w['blocks.0.ln0.weight'])
             self.ln0_bias = nn.Parameter(w['blocks.0.ln0.bias'])
 
-        self.blocks = nn.ModuleList()
+        self.blocks: List[RWKV_Block] = nn.ModuleList()
 
         for i in range(self.num_layer):
             # 提取当前块的权重
@@ -839,7 +839,7 @@ class RWKV6(JITMODULE):
         return x, state
 
     @staticmethod
-    def forward_prefill_wrapper(block, x, state, i, training):
+    def forward_prefill_wrapper(block: RWKV_Block, x, state, i, training):
         return block.forward_prefill(x, state, i, training)
 
     def forward_prefill(self,
