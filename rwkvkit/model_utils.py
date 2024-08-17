@@ -26,7 +26,6 @@ class RWKVConfig:
     model_path: str
     vocab_size: Optional[int] = 65536
     device: Optional[str] = None
-    onnx_opset_version: Optional[int] = 18
     chunk_size: int = 0
     state_path: Optional[str] = ""
     data_format: Optional[Literal['fp32', 'fp16', 'bf16']] = 'bf16'

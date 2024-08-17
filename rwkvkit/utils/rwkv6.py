@@ -27,29 +27,22 @@ class RWKV_Block(JITMODULE):
             n_embd: int,
             n_head: int,
             config: RWKVConfig,
-            onnx_opset=16,
             kernel_function=None):
         super().__init__()
         self.n_embd = n_embd
         self.n_head = n_head
         self.head_size = n_embd // n_head
-        self.onnx_opset = onnx_opset
         self.config = config
         self.kernel_function = kernel_function
 
         # 初始化层归一化
-        if self.onnx_opset >= 17:
-            self.ln1 = nn.LayerNorm(n_embd)
-            self.ln1.weight = nn.Parameter(block_w['ln1.weight'])
-            self.ln1.bias = nn.Parameter(block_w['ln1.bias'])
-            self.ln2 = nn.LayerNorm(n_embd)
-            self.ln2.weight = nn.Parameter(block_w['ln2.weight'])
-            self.ln2.bias = nn.Parameter(block_w['ln2.bias'])
-        else:
-            self.ln1_weight = nn.Parameter(block_w['ln1.weight'])
-            self.ln1_bias = nn.Parameter(block_w['ln1.bias'])
-            self.ln2_weight = nn.Parameter(block_w['ln2.weight'])
-            self.ln2_bias = nn.Parameter(block_w['ln2.bias'])
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln1.weight = nn.Parameter(block_w['ln1.weight'])
+        self.ln1.bias = nn.Parameter(block_w['ln1.bias'])
+        self.ln2 = nn.LayerNorm(n_embd)
+        self.ln2.weight = nn.Parameter(block_w['ln2.weight'])
+        self.ln2.bias = nn.Parameter(block_w['ln2.bias'])
+
 
         # 初始化激活函数
         self.silu = nn.SiLU(inplace=False)
@@ -79,16 +72,11 @@ class RWKV_Block(JITMODULE):
         self.att_gate = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.att_gate.weight = nn.Parameter(block_w['att.gate.weight'])
 
-        if self.onnx_opset >= 18:
-            self.att_group_norm = nn.GroupNorm(
-                num_groups=n_head, num_channels=n_embd, eps=1e-5, affine=True)
-            self.att_group_norm.weight = nn.Parameter(
-                block_w['att.ln_x.weight'])
-            self.att_group_norm.bias = nn.Parameter(block_w['att.ln_x.bias'])
-        else:
-            self.att_group_norm_weight = nn.Parameter(
-                block_w['att.ln_x.weight'])
-            self.att_group_norm_bias = nn.Parameter(block_w['att.ln_x.bias'])
+        self.att_group_norm = nn.GroupNorm(
+            num_groups=n_head, num_channels=n_embd, eps=1e-5, affine=True)
+        self.att_group_norm.weight = nn.Parameter(
+            block_w['att.ln_x.weight'])
+        self.att_group_norm.bias = nn.Parameter(block_w['att.ln_x.bias'])
 
         # 初始化前馈参数
         self.ffn_time_maa_k = nn.Parameter(block_w['ffn.time_maa_k'])
@@ -101,64 +89,6 @@ class RWKV_Block(JITMODULE):
         self.ffn_value = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.ffn_value.weight = nn.Parameter(block_w['ffn.value.weight'])
 
-    @JITSCRIPT
-    def manual_layer_norm(
-            self,
-            x: torch.Tensor,
-            weight: torch.Tensor,
-            bias: torch.Tensor,
-            eps: float = 1e-5) -> torch.Tensor:
-        """
-        人工层归一化函数
-        Args:
-            x (torch.Tensor): 输入张量，形状为 [Batch, *]，* 表示任意维度。
-            weight (torch.Tensor): 归一化的权重张量，形状为 [*]，* 表示与输入张量 x 的最后一个维度相同。
-            bias (torch.Tensor): 归一化的偏置张量，形状为 [*]，* 表示与输入张量 x 的最后一个维度相同。
-            eps (float): 用于数值稳定性的小值，防止除以零。
-        Returns:
-            torch.Tensor: 经过手动层归一化后的张量，形状与输入的 x 相同。
-        """
-        mean = x.mean(dim=-1, keepdim=True)
-        var = x.var(dim=-1, keepdim=True, unbiased=False)
-        x_normalized = (x - mean) / torch.sqrt(var + eps)
-        x_scaled = x_normalized * weight  # .unsqueeze(-1) #这里会自动广播对齐
-        x_shifted = x_scaled + bias  # .unsqueeze(-1)
-        return x_shifted
-
-    @JITSCRIPT
-    def manual_group_norm(
-            self,
-            x: torch.Tensor,
-            num_groups: int,
-            weight: torch.Tensor,
-            bias: torch.Tensor,
-            eps: float = 1e-5) -> torch.Tensor:
-        """
-        人工组归一化函数。
-        Args:
-            x (torch.Tensor): 输入张量，形状为 [Batch, n_embd]。（或者[Batch*L, n_embd]）
-            num_groups (int): 分组数，这里为 RWKV 的注意力头数。
-            weight (torch.Tensor): 归一化的权重张量，形状为 [n_embd]。
-            bias (torch.Tensor): 归一化的偏置张量，形状为 [n_embd]。
-            eps (float): 用于数值稳定性的小值，防止除以零。
-        Returns:
-            torch.Tensor: 经过人工组归一化后的张量，形状与输入的 x 相同。
-        """
-        N, C = x.shape
-        # if C % num_groups != 0:
-        # raise ValueError("num_channels must be divisible by num_groups")
-        # 加上这个会有无法推断静态图的警告
-        channels_per_group = C // num_groups
-        # 重塑x以便于分组
-        x = x.view(N, num_groups, channels_per_group)
-        mean = x.mean(dim=2, keepdim=True)
-        var = x.var(dim=2, keepdim=True, unbiased=False)
-        x_normalized = (x - mean) / torch.sqrt(var + eps)
-        x_normalized = x_normalized.view(N, C)
-        # 应用权重和偏置
-        x_scaled = x_normalized * weight
-        x_shifted = x_scaled + bias
-        return x_shifted
 
     @JITSCRIPT
     def channel_mixing(
@@ -245,16 +175,7 @@ class RWKV_Block(JITMODULE):
         x, state, g = self.time_mixing_jit(x, state, i, batch_size, H, S)
 
         # 展平x并应用组归一化和门控
-        if self.onnx_opset >= 18:
-            x = self.time_mixing_jit2(x, g)
-        else:
-            x = x.flatten(start_dim=1)
-            x = self.manual_group_norm(
-                x,
-                num_groups=H,
-                weight=self.att_group_norm_weight,
-                bias=self.att_group_norm_bias) * g
-            x = self.att_output(x)
+        x = self.time_mixing_jit2(x, g)
         # 应用输出层并返回结果
         return x
 
@@ -326,15 +247,7 @@ class RWKV_Block(JITMODULE):
         x, state = self.apply_time_mixxing_kernel(
             r, w, k, v, state, i, batch_size, L, H, S, backend=self.config.prefill_kernel, training=training)
         # 展平x并应用组归一化
-        if self.onnx_opset >= 18:
-            x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
-        else:
-            x = x.flatten(start_dim=2).view(batch_size * L, -1)
-            x = self.manual_group_norm(
-                x, num_groups=H, weight=self.att_group_norm_weight, bias=self.att_group_norm_bias).view(
-                batch_size, L, -1) * g  # 因为组归一化强制要求Channel维度在第二个维度
-            x = self.att_output(x)
-
+        x = self.time_mixing_parallel_jit2(x, g, batch_size, L)
         return x
 
     @JITSCRIPT
@@ -515,14 +428,8 @@ class RWKV_Block(JITMODULE):
         Returns:
             torch.Tensor: 前向传播结果张量，形状与输入的x相同。
         """
-        if self.onnx_opset >= 17:
-            x = x + self.time_mixing(self.ln1(x), state, i)
-            x = x + self.channel_mixing(self.ln2(x), state, i)
-        else:
-            x = x + self.time_mixing(self.manual_layer_norm(x,
-                                     self.ln1_weight, self.ln1_bias, 1e-5), state, i)
-            x = x + self.channel_mixing(self.manual_layer_norm(x,
-                                        self.ln2_weight, self.ln2_bias, 1e-5), state, i)
+        x = x + self.time_mixing(self.ln1(x), state, i)
+        x = x + self.channel_mixing(self.ln2(x), state, i)
         return x
 
     def forward_prefill(
@@ -540,15 +447,10 @@ class RWKV_Block(JITMODULE):
         Returns:
             torch.Tensor: 前向传播结果张量，形状与输入的x相同。
         """
-        if self.onnx_opset >= 17:
-            x = x + self.time_mixing_parallel(self.ln1(x), state, i, training)
-            x = x + \
-                self.channel_mixing_parallel(self.ln2(x), state, i, training)
-        else:
-            x = x + self.time_mixing_parallel(self.manual_layer_norm(
-                x, self.ln1_weight, self.ln1_bias, 1e-5), state, i, training)
-            x = x + self.channel_mixing_parallel(self.manual_layer_norm(
-                x, self.ln2_weight, self.ln2_bias, 1e-5), state, i, training)
+        x = x + self.time_mixing_parallel(self.ln1(x), state, i, training)
+        x = x + \
+            self.channel_mixing_parallel(self.ln2(x), state, i, training)
+
         return x
 
 
@@ -565,11 +467,6 @@ class RWKV6(JITMODULE):
         self.config = config
         self.device = config.device
         self.tokenizer = RWKV_TOKENIZER(self.config.vocab_file)
-        try:
-            self.onnx_opset_version = int(self.config.onnx_opset_version)
-        except BaseException:
-            self.onnx_opset_version = 16  # 默认是最低的，op17版本才支持LayerNorm算子，op18版本才支持GroupNorm算子
-
         self.data_format = self.config.data_format
         assert self.data_format in ['fp32', 'fp16', 'bf16']
         assert self.config.prefill_kernel in [
@@ -639,13 +536,9 @@ class RWKV6(JITMODULE):
         # 初始化模型参数
         self.emb = nn.Embedding.from_pretrained(w['emb.weight'], freeze=True)
 
-        if self.onnx_opset_version >= 17:
-            self.ln0 = nn.LayerNorm(self.n_embd)
-            self.ln0.weight = nn.Parameter(w['blocks.0.ln0.weight'])
-            self.ln0.bias = nn.Parameter(w['blocks.0.ln0.bias'])
-        else:
-            self.ln0_weight = nn.Parameter(w['blocks.0.ln0.weight'])
-            self.ln0_bias = nn.Parameter(w['blocks.0.ln0.bias'])
+        self.ln0 = nn.LayerNorm(self.n_embd)
+        self.ln0.weight = nn.Parameter(w['blocks.0.ln0.weight'])
+        self.ln0.bias = nn.Parameter(w['blocks.0.ln0.bias'])
 
         self.blocks: List[RWKV_Block] = nn.ModuleList()
 
@@ -659,43 +552,14 @@ class RWKV6(JITMODULE):
                     self.n_embd,
                     self.n_head,
                     self.config,
-                    self.onnx_opset_version,
                     self.kernel_func))
 
-        if self.onnx_opset_version >= 17:
-            self.ln_out = nn.LayerNorm(self.n_embd)
-            self.ln_out.weight = nn.Parameter(w['ln_out.weight'])
-            self.ln_out.bias = nn.Parameter(w['ln_out.bias'])
-        else:
-            self.ln_out_weight = nn.Parameter(w['ln_out.weight'])
-            self.ln_out_bias = nn.Parameter(w['ln_out.bias'])
+        self.ln_out = nn.LayerNorm(self.n_embd)
+        self.ln_out.weight = nn.Parameter(w['ln_out.weight'])
+        self.ln_out.bias = nn.Parameter(w['ln_out.bias'])
 
         self.head = nn.Linear(self.n_embd, self.config.vocab_size, bias=False)
         self.head.weight = nn.Parameter(w['head.weight'])
-
-    @JITSCRIPT
-    def manual_layer_norm(
-            self,
-            x: torch.Tensor,
-            weight: torch.Tensor,
-            bias: torch.Tensor,
-            eps: float = 1e-5) -> torch.Tensor:
-        """
-        人工层归一化函数
-        Args:
-            x (torch.Tensor): 输入张量，形状为 [Batch, *]，* 表示任意维度。
-            weight (torch.Tensor): 归一化的权重张量，形状为 [*]，* 表示与输入张量 x 的最后一个维度相同。
-            bias (torch.Tensor): 归一化的偏置张量，形状为 [*]，* 表示与输入张量 x 的最后一个维度相同。
-            eps (float): 用于数值稳定性的小值，防止除以零。
-        Returns:
-            torch.Tensor: 经过手动层归一化后的张量，形状与输入的 x 相同。
-        """
-        mean = x.mean(dim=-1, keepdim=True)
-        var = x.var(dim=-1, keepdim=True, unbiased=False)
-        x_normalized = (x - mean) / torch.sqrt(var + eps)
-        x_scaled = x_normalized * weight
-        x_shifted = x_scaled + bias
-        return x_shifted
 
     @torch.no_grad
     def forward(self,
@@ -822,21 +686,12 @@ class RWKV6(JITMODULE):
         Returns:
             torch.Tensor: 模型输出。
         """
-        if self.onnx_opset_version >= 17:
-            x = self.forward_jit1(token)
-        else:
-            x = self.emb(token)
-            x = self.manual_layer_norm(x, self.ln0_weight, self.ln0_bias, 1e-5)
+        x = self.forward_jit1(token)
         # 开始循环推理RWKV Block
         for i, block in enumerate(self.blocks):
             x = block(x, state, i)
 
-        if self.onnx_opset_version >= 17:
-            x = self.forward_jit2(x)
-        else:
-            x = self.manual_layer_norm(
-                x, self.ln_out_weight, self.ln_out_bias, 1e-5)
-            x = self.head(x)
+        x = self.forward_jit2(x)
         return x, state
 
     @staticmethod
@@ -856,11 +711,7 @@ class RWKV6(JITMODULE):
         Returns:
             torch.Tensor: 模型输出。
         """
-        if self.onnx_opset_version >= 17:
-            x = self.forward_jit1(token)
-        else:
-            x = self.emb(token)
-            x = self.manual_layer_norm(x, self.ln0_weight, self.ln0_bias, 1e-5)
+        x = self.forward_jit1(token)
         # 开始循环推理RWKV Block
         if training:
             for i, block in enumerate(self.blocks):
@@ -868,12 +719,7 @@ class RWKV6(JITMODULE):
         else:
             for i, block in enumerate(self.blocks):
                 x = block.forward_prefill(x, state, i, training)
-        if self.onnx_opset_version >= 17:
-            x = self.forward_jit2(x)
-        else:
-            x = self.manual_layer_norm(
-                x, self.ln_out_weight, self.ln_out_bias, 1e-5)
-            x = self.head(x)
+        x = self.forward_jit2(x)
         return x, state
 
     @JITSCRIPT
@@ -982,63 +828,19 @@ class RWKV6(JITMODULE):
 
         # 保存 RWKV_RNN 的权重
         for name, param in self.named_parameters():
-            if self.onnx_opset_version >= 17:
-                if 'ln0' in name:
-                    state_dict[name.replace(
-                        'ln0.', 'blocks.0.ln0.')] = param.data
-                if 'blocks' not in name:
-                    state_dict[name] = param.data
-            else:
-                if 'ln0_weight' in name:
-                    state_dict['blocks.0.ln0.weight'] = param.data
-                elif 'ln0_bias' in name:
-                    state_dict['blocks.0.ln0.bias'] = param.data
-                elif 'ln_out_weight' in name:
-                    state_dict['ln_out.weight'] = param.data
-                elif 'ln_out_bias' in name:
-                    state_dict['ln_out.bias'] = param.data
-                elif 'blocks' not in name:
-                    state_dict[name] = param.data
+            if 'ln0' in name:
+                state_dict[name.replace(
+                    'ln0.', 'blocks.0.ln0.')] = param.data
+            if 'blocks' not in name:
+                state_dict[name] = param.data
 
         # 保存 RWKV_Block 的权重
         for i, block in enumerate(self.blocks):
             for name, param in block.named_parameters():
-                # 根据 ONNX opset 版本对权重名称进行调整
-                if self.onnx_opset_version >= 18:
-                    if name == 'att_group_norm.weight':
-                        name = 'att.ln_x.weight'
-                    elif name == 'att_group_norm.bias':
-                        name = 'att.ln_x.bias'
-                elif self.onnx_opset_version >= 17:
-                    if name == 'ln1.weight':
-                        name = 'ln1.weight'
-                    elif name == 'ln1.bias':
-                        name = 'ln1.bias'
-                    elif name == 'ln2.weight':
-                        name = 'ln2.weight'
-                    elif name == 'ln2.bias':
-                        name = 'ln2.bias'
-                    elif name == 'att_group_norm_weight':
-                        name = 'att.ln_x.weight'
-                    elif name == 'att_group_norm_bias':
-                        name = 'att.ln_x.bias'
-                else:
-                    if name == 'ln0_weight':
-                        name = 'ln0.weight'
-                    elif name == 'ln0_bias':
-                        name = 'ln0.bias'
-                    elif name == 'ln1_weight':
-                        name = 'ln1.weight'
-                    elif name == 'ln1_bias':
-                        name = 'ln1.bias'
-                    elif name == 'ln2_weight':
-                        name = 'ln2.weight'
-                    elif name == 'ln2_bias':
-                        name = 'ln2.bias'
-                    elif name == 'att_group_norm_weight':
-                        name = 'att.ln_x.weight'
-                    elif name == 'att_group_norm_bias':
-                        name = 'att.ln_x.bias'
+                if name == 'att_group_norm.weight':
+                    name = 'att.ln_x.weight'
+                elif name == 'att_group_norm.bias':
+                    name = 'att.ln_x.bias'
 
                 if name.startswith('att_'):
                     # 将 'att_' 替换为 'att.'

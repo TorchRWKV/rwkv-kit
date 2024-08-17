@@ -87,7 +87,7 @@ Benchmark: (we use native torch to autoregress)
 
 | Method | Batch Size | Token Length | Prefill Time (ms) | Token Generation Speed (tokens/second) | Notes |
 |--------|------------|--------------|-------------------|---------------------------------------|-------|
-| triton-chunk | 1 | 1024 | 132.50 | 42.83 | Suitable for inference and state fine-tuning, better speed for long tokens |
+| triton-chunk | 1 | 1024 | 132.50 | 42.83 | Suitable for inference and training, better speed |
 | triton | 1 | 1024 | 105.49 | - | Suitable for inference and training, high accuracy |
 | torch | 1 | 1024 | 595.22 | - | Suitable for inference on devices where Triton is unavailable |
 | manual-torch | 1 | 1024 | 2468.00 | - | Suitable for training on devices where Triton is unavailable, high accuracy |
