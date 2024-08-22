@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(src_dir))
 import torch
 from rwkvkit.utils.rwkv6 import RWKV6
 
-from rwkvkit.sampler import sample_logits
+from rwkvkit.utils.sampler import sample_logits
 from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
 
 

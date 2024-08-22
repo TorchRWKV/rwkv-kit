@@ -1,11 +1,10 @@
-from einops import rearrange
 from rwkvkit.model_utils import RWKV_x060, RWKVConfig, JITMODULE, JITSCRIPT
 from typing import Tuple, Optional, List, Dict, Generator, Union
 import torch.nn as nn
 import torch
 import os
 from rwkvkit.rwkv_tokenizer import RWKV_TOKENIZER
-from rwkvkit.sampler import sample_logits
+from rwkvkit.utils.sampler import sample_logits
 from torch.utils.checkpoint import checkpoint
 
 
@@ -350,16 +349,17 @@ class RWKV_Block(JITMODULE):
         # we dont want to support cuda, since it is only supported by nvidia
         # and AMD
         if backend != "torch":
-            u = self.att_time_faaaa.view(self.n_head, self.head_size)
-            r = rearrange(r.squeeze(-1), 'b l (h d) -> b h l d', h=H)
-            k = rearrange(k, 'b l (h d) -> b h l d', h=H)
-            v = rearrange(v, 'b l (h d) -> b h l d', h=H)
-            w = rearrange(w.squeeze(-1), 'b l h d -> b h l d', h=H)
+            u = self.att_time_faaaa.view(H, S)
+            B = r.shape[0]
+            r = r.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
+            w = w.squeeze(-1).permute(0, 2, 1, 3).contiguous()
+            k = k.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
+            v = v.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
 
             # Apply the chosen kernel function
             o, state_layer = self.kernel_function(
                 r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True, training=training)
-            x = rearrange(o, 'b h l d -> b l (h d)')
+            x = o.permute(0, 2, 1, 3).reshape(B, L, H * S)
             state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
                   ] = state_layer.view(batch_size, S, -1)
 
@@ -513,7 +513,7 @@ class RWKV6(JITMODULE):
         if load_from_file:
             if not self.config.model_path.endswith('.pth'):
                 self.config.model_path += '.pth'
-            w = torch.load(self.config.model_path, map_location="cpu")
+            w = torch.load(self.config.model_path, map_location="cpu", weights_only=True)
         else:
             assert w is not None
 
@@ -666,7 +666,10 @@ class RWKV6(JITMODULE):
             token_response[:, 0] = token
             for i, t in enumerate(token_generator(token, state), start=1):
                 token_response[:, i] = t
-            token_response = token_response[:, :i + 1]
+            try:
+                token_response = token_response[:, :i + 1]
+            except BaseException:
+                pass
             response = self.tokenizer.decode(token_response.cpu().tolist())[0]
             for s in stop:
                 response = response.split(s)[0]
@@ -767,7 +770,7 @@ class RWKV6(JITMODULE):
         # 这里把训练好的state加载进去
         if self.config.state_path != '':
             STATE = torch.load(self.config.state_path.replace(
-                ".pth", "") + '.pth', map_location=torch.device("cpu"))
+                ".pth", "") + '.pth', map_location=torch.device("cpu"), weights_only=True)
             head_size = self.head_size
             for i, (key, value) in enumerate(STATE.items()):
                 state[:, ((2 + head_size) * i + 2):((2 + head_size) * (i + 1)),

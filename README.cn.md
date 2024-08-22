@@ -67,6 +67,12 @@ Benchmark: (we use native torch to autoregress)
     TEMPERATURE = 1.0
     TOP_P = 0.0
     LENGTH_PER_TRIAL = 100
+    model = rwkv6(
+        model_path="weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
+        prefill_kernel="torch", # torch, manual-torch, triton, triton-chunk
+        use_jit=True,
+        compile=False
+    )
     state = model.init_state(batch_size)
 
 
