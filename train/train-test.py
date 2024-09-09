@@ -133,7 +133,7 @@ from rwkvkit.model_utils import RWKVConfig
 # 初始化模型参数
 config = RWKVConfig(model_path='weight/RWKV-x060-World-1B6-v2.1-20240328-ctx4096',
                         state_path='weight/rwkv-x060-chn_single_round_qa-1B6-20240516-ctx2048.pth',
-                        prefill_kernel="manual-torch",)
+                        prefill_kernel="torch-manual",)
 # seed = 42
 torch.manual_seed(42)
 

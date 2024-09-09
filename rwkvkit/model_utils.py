@@ -28,7 +28,7 @@ class RWKVConfig:
     state_path: Optional[str] = ""
     data_format: Optional[Literal['fp32', 'fp16', 'bf16']] = 'bf16'
     prefill_kernel: Literal['torch', 'triton',
-                                     'triton-chunk', 'manual-torch'] = 'torch'
+                                     'triton-chunk', 'torch-manual'] = 'torch'
     init_model: Optional[bool] = False
     use_jit: Optional[bool] = True
     n_embd: Optional[int] = 2048

@@ -69,7 +69,7 @@ Benchmark: (we use native torch to autoregress)
     LENGTH_PER_TRIAL = 100
     model = rwkv6(
         model_path="weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
-        prefill_kernel="torch", # torch, manual-torch, triton, triton-chunk
+        prefill_kernel="torch", # torch, torch-manual, triton, triton-chunk
         use_jit=True,
         compile=False
     )
@@ -115,7 +115,7 @@ Benchmark: (we use native torch to autoregress)
 | triton-chunk | 1 | 1024 | 132.50 | 42.83 | 速度最快，适合推理和训练 |
 | triton | 1 | 1024 | 105.49 | - | 适合推理和训练, 高精度, 某些情况不如 chunk 的速度 |
 | torch | 1 | 1024 | 595.22 | - | 适合在Triton不能使用的设备下推理 |
-| manual-torch | 1 | 1024 | 2468.00 | - | 适合在Triton不能使用的设备下训练，高精度 |
+| torch-manual | 1 | 1024 | 2468.00 | - | 适合在Triton不能使用的设备下训练，高精度 |
 | - | 1 | - | - | 48.42 | 不包含预填充 |
 | - | 64 | - | - | 1266.77 | 不包含预填充 |
 | - | 128 | - | - | 1875.03 | 不包含预填充 |

@@ -51,7 +51,7 @@ Benchmark: (we use native torch to autoregress)
     LENGTH_PER_TRIAL = 100
     model = rwkv6(
         model_path="weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
-        prefill_kernel="torch", # torch, manual-torch, triton, triton-chunk
+        prefill_kernel="torch", # torch, torch-manual, triton, triton-chunk
         use_jit=True,
         compile=False
     )
@@ -96,7 +96,7 @@ Benchmark: (we use native torch to autoregress)
 | triton-chunk | 1 | 1024 | 132.50 | 42.83 | Suitable for inference and training, better speed |
 | triton | 1 | 1024 | 105.49 | - | Suitable for inference and training, high accuracy |
 | torch | 1 | 1024 | 595.22 | - | Suitable for inference on devices where Triton is unavailable |
-| manual-torch | 1 | 1024 | 2468.00 | - | Suitable for training on devices where Triton is unavailable, high accuracy |
+| torch-manual | 1 | 1024 | 2468.00 | - | Suitable for training on devices where Triton is unavailable, high accuracy |
 | - | 1 | - | - | 48.42 | Excluding prefill |
 | - | 64 | - | - | 1266.77 | Excluding prefill |
 | - | 128 | - | - | 1875.03 | Excluding prefill |

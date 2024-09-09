@@ -33,6 +33,8 @@ class RWKV_Block(JITMODULE):
         self.head_size = n_embd // n_head
         self.config = config
         self.kernel_function = kernel_function
+        # read from scale env
+        self.scale = float(os.environ.get('RWKV_SCALE', '1.0'))
 
         # 初始化层归一化
         self.ln1 = nn.LayerNorm(n_embd)
@@ -171,8 +173,9 @@ class RWKV_Block(JITMODULE):
             torch.Tensor: 混合后的时间状态张量，形状与输入的state相同。
         """
         batch_size, H, S = x.size(0), self.n_head, self.head_size
-        x, state, g = self.time_mixing_jit(x, state, i, batch_size, H, S)
-
+        r, w, k, v, g, state = self.time_mixing_jit(x, state, i, batch_size, H, S)
+        x, state = self.apply_time_mixxing_kernel(
+            r, w, k, v, state, i, batch_size, 1, H, S, backend=self.config.prefill_kernel, training=False)
         # 展平x并应用组归一化和门控
         x = self.time_mixing_jit2(x, g)
         # 应用输出层并返回结果
@@ -203,23 +206,14 @@ class RWKV_Block(JITMODULE):
              (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
 
         # 计算注意力机制的权重
-        w = -torch.exp(w.view(batch_size, H, S, 1))
+        w = -torch.exp(w.view(batch_size, 1, H, S))
         # 计算注意力机制的组件
-        r = self.att_receptance(xr).view(batch_size, H, 1, S)
-        k = self.att_key(xk).view(batch_size, H, S, 1)
-        v = self.att_value(xv).view(batch_size, H, 1, S)
+        r = self.att_receptance(xr).view(batch_size, 1, H, S)
+        k = self.att_key(xk).view(batch_size, 1, H, S)
+        v = self.att_value(xv).view(batch_size, 1, H, S)
         g = self.silu(self.att_gate(xg))
 
-        # 使用注意力机制更新状态
-        s = state[:, (2 + S) * i + 2:(2 + S) * (i + 1),
-                  :].view(batch_size, H, S, S)
-        a = k @ v
-        x = r @ torch.addcmul(s, self.att_time_faaaa, a)
-        s = torch.addcmul(a, torch.exp(w), s)
-        # 更新第i层STATE的注意力参数
-        state[:, (2 + S) * i + 2:(2 + S) * (i + 1),
-              :] = s.view(batch_size, S, -1)
-        return x, state, g
+        return r, w, k, v, g, state
 
     @JITSCRIPT
     def time_mixing_jit2(self, x: torch.Tensor, g):
@@ -286,11 +280,11 @@ class RWKV_Block(JITMODULE):
 
         w = (self.att_time_decay +
              (torch.tanh(xw @ self.att_time_decay_w1) @ self.att_time_decay_w2))
-        w = -torch.exp(w.view(batch_size, L, H, S, 1))
+        w = -torch.exp(w.view(batch_size, L, H, S))
 
-        r = self.att_receptance(xr)
-        k = self.att_key(xk)
-        v = self.att_value(xv)
+        r = self.att_receptance(xr).view(batch_size, L, H, S)
+        k = self.att_key(xk).view(batch_size, L, H, S)
+        v = self.att_value(xv).view(batch_size, L, H, S)
         g = self.silu(self.att_gate(xg))  # [10, 100, n_embd]
 
         return r, w, k, v, g, state
@@ -318,7 +312,7 @@ class RWKV_Block(JITMODULE):
         - "torch": Native PyTorch implementation. Uses built-in PyTorch operations,
                 which may be slower on certain hardware.
 
-        - "manual-torch": Manual implementation with PyTorch, using FP32 for backward pass.
+        - "torch-manual": Manual implementation with PyTorch, using FP32 for backward pass.
                         Suitable for scenarios requiring precise gradients.
 
         - "triton": Triton backend implementation, computing in FP32.
@@ -351,21 +345,22 @@ class RWKV_Block(JITMODULE):
         if backend != "torch":
             u = self.att_time_faaaa.view(H, S)
             B = r.shape[0]
-            r = r.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
-            w = w.squeeze(-1).permute(0, 2, 1, 3).contiguous()
-            k = k.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
-            v = v.view(B, L, H, S).permute(0, 2, 1, 3).contiguous()
+            r = r.permute(0, 2, 1, 3).contiguous()
+            w = w.permute(0, 2, 1, 3).contiguous()
+            k = k.permute(0, 2, 1, 3).contiguous()
+            v = v.permute(0, 2, 1, 3).contiguous()
 
             # Apply the chosen kernel function
+            # scale = -1.0 to apply scale for fp16
             o, state_layer = self.kernel_function(
-                r, k, v, w, u=u, scale=1., initial_state=s, output_final_state=True, training=training)
+                r, k, v, w, u=u, scale=self.scale, initial_state=s, output_final_state=True, training=training)
             x = o.permute(0, 2, 1, 3).reshape(B, L, H * S)
             state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
                   ] = state_layer.view(batch_size, S, -1)
 
         else:
             x, state_layer = self.native_torch_time_mixing_kernel(
-                r, w, k, v, s, batch_size, L, H, S)
+                r, w.unsqueeze(-1), k, v, s, batch_size, L, H, S, scale=self.scale)
             state[:, (2 + S) * i + 2:(2 + S) * (i + 1)
                   ] = state_layer.view(batch_size, S, -1)
         return x, state
@@ -381,7 +376,11 @@ class RWKV_Block(JITMODULE):
             batch_size: int,
             L: int,
             H: int,
-            S: int):
+            S: int,
+            scale: float = 1.0):
+        if scale != 1.0:
+            scale = H ** -0.5
+            r = r * scale
         a = k.view(batch_size, L, H, S, 1) @ v.view(batch_size,
                                                     L, H, 1, S)  # a: [batch_size, L, H, S, S]
         w = torch.exp(w)
@@ -469,9 +468,14 @@ class RWKV6(JITMODULE):
         self.tokenizer = RWKV_TOKENIZER(self.config.vocab_file)
         self.data_format = self.config.data_format
         assert self.data_format in ['fp32', 'fp16', 'bf16']
+        if self.data_format == 'fp16':
+            # set scale env to -1.0
+            os.environ['RWKV_SCALE'] = '-1.0'
+        else:
+            os.environ['RWKV_SCALE'] = '1.0'
         assert self.config.prefill_kernel in [
-            "torch", "triton", "triton-chunk", "manual-torch"]
-        if self.config.prefill_kernel == "manual-torch":
+            "torch", "triton", "triton-chunk", "torch-manual"]
+        if self.config.prefill_kernel == "torch-manual":
             from rwkvkit.ops.rwkv6 import native_recurrent_rwkv6
             self.kernel_func = native_recurrent_rwkv6
         elif self.config.prefill_kernel == "triton":
@@ -526,6 +530,7 @@ class RWKV6(JITMODULE):
                 w[k] = w[k].unsqueeze(-1)
             if "blocks" in k:
                 self.num_layer = max(self.num_layer, int(k.split(".")[1]))
+
         self.num_layer += 1
 
         self.n_head = w['blocks.0.att.time_faaaa'].shape[0]
