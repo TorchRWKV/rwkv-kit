@@ -7,11 +7,11 @@ if __name__ == '__main__':
     # 加载模型和分词器
     print("Loading model and tokenizer...")
     model = rwkv6(
-        # model_path="weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
-        model_path="/mnt/d/rwkv/models/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth",
+        model_path="weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
+        # model_path="/mnt/d/rwkv/models/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth",
         # state_path="weight/rwkv-0.pth",
         prefill_kernel="triton-chunk",
-        use_jit=True,
+        use_jit=False,
         compile=True,
         data_format="fp16",
     )

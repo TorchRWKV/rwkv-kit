@@ -61,5 +61,5 @@ def rwkv6(
     )
     from rwkvkit.utils.rwkv6 import RWKV6
     if compile:
-        return torch.compile(RWKV6(config=config))
+        return torch.compile(RWKV6(config=config), fullgraph=True)
     return RWKV6(config=config)
