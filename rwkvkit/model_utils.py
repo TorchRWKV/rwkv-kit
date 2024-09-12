@@ -91,7 +91,7 @@ class RWKVConfig:
             except ImportError:
                 pass
 
-        self.device = 'cpu'
+            self.device = 'cpu'
 
 
 ##########################################################################
