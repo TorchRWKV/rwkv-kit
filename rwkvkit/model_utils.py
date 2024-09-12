@@ -230,7 +230,7 @@ class Block(nn.Module):
             self.ln0 = nn.LayerNorm(self.config.n_embd)
 
         self.att = RWKV_Tmix_x060(config, layer_id)
-        self.ffn = RWKV_CMix_x060(config, layer_id, dim_ffn)
+        self.ffn = RWKV_CMix_x060(config, layer_id, dim_fnn)
 
     def forward(self, x):
 
