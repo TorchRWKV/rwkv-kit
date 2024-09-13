@@ -91,7 +91,7 @@ class RWKVConfig:
             except ImportError:
                 pass
 
-        self.device = 'cpu'
+            self.device = 'cpu'
 
 
 ##########################################################################
@@ -230,7 +230,7 @@ class Block(nn.Module):
             self.ln0 = nn.LayerNorm(self.config.n_embd)
 
         self.att = RWKV_Tmix_x060(config, layer_id)
-        self.ffn = RWKV_CMix_x060(config, layer_id, dim_ffn)
+        self.ffn = RWKV_CMix_x060(config, layer_id, dim_fnn)
 
     def forward(self, x):
 
@@ -297,7 +297,7 @@ class RWKV_x060(nn.Module):
                     '_w') or n.endswith('_w1') or n.endswith('_w2') or n.endswith('_bias'):
                 if 'ln_x.weight' in n:
                     layer_scale = (
-                        1 + int(n.split('.')[1])) / self.self.config.n_layer
+                        1 + int(n.split('.')[1])) / self.config.n_layer
                     m[n] = (p * 0.0) + (layer_scale ** 0.7)
                 else:
                     m[n] = p
@@ -310,10 +310,10 @@ class RWKV_x060(nn.Module):
                 print(f" [scale {scale}]")
             elif n == "head.weight":
                 m[n] = p
-                if self.self.config.vocab_size > self.self.config.n_embd:
+                if self.config.vocab_size > self.config.n_embd:
                     scale = 0.5 * \
-                        math.sqrt(self.self.config.vocab_size /
-                                  self.self.config.n_embd)
+                        math.sqrt(self.config.vocab_size /
+                                  self.config.n_embd)
                 else:
                     scale = 0.5
                 nn.init.orthogonal_(m[n], gain=scale)
