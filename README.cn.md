@@ -33,6 +33,8 @@ rwkv-kit 是一个纯 PyTorch 实现的 RWKV 大语言模型推理框架。该�
    ```
    cd rwkv-kit
    pip install -r requirements.txt
+   # 如果您想用fla kernel，需要安装好triton和rwkv-fla
+   pip install rwkv-fla[cuda] # pip install rwkv-fla[xpu], pip install rwkv-fla[rocm]
    ```
 
 3. 从 [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main) 下载 RWKV6 模型，并将权重放置在 `weight` 文件夹中。

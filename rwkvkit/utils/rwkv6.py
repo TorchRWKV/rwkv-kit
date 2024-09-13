@@ -693,9 +693,16 @@ class RWKV6(JITMODULE):
         if stream:
 
             def stream_generator():
-                yield self.tokenizer.decode(token.unsqueeze(1).cpu().tolist())[0]
+                temp = self.tokenizer.decode(token.unsqueeze(1).cpu().tolist())[0]
+                generated_text = str(temp)
+                yield temp
                 for t in token_generator(token, state):
-                    yield self.tokenizer.decode(t.unsqueeze(1).cpu().tolist())[0]
+                    temp = self.tokenizer.decode(t.unsqueeze(1).cpu().tolist())[0]
+                    generated_text += temp
+                    for s in stop:
+                        if s == generated_text[-len(s) :]:
+                            return
+                    yield temp
 
             return stream_generator()
         else:

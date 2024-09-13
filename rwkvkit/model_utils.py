@@ -13,6 +13,9 @@ from torch.nn import functional as F
 from dataclasses import dataclass, asdict
 from typing import Optional, Literal
 from importlib import resources
+from rwkvkit.utils.device import is_xpu_available, is_musa_available, \
+      is_npu_available, is_cuda_available, is_directml_available, \
+      is_linux
 
 
 JITMODULE = nn.Module
@@ -47,6 +50,10 @@ class RWKVConfig:
         if not self.use_jit:
             os.environ['DISABLE_JIT'] = '1'
         if 'triton' in self.prefill_kernel:
+            is_linux_plat = is_linux()
+            if not is_linux_plat:
+                raise ValueError(
+                    "Triton prefill kernel is only supported on Linux.")
             try:
                 import triton
             except ImportError:
@@ -59,39 +66,25 @@ class RWKVConfig:
 
 
     def check_available_device(self):
-        if torch.cuda.is_available():
+        if is_cuda_available():
             self.device = 'cuda'
-        else:
-            try:
-                import torch_musa
-                if torch.musa.is_available():
-                    self.device = 'musa'
-                    return
-            except ImportError:
-                pass
+            return
+        if is_xpu_available():
+            self.device = 'xpu'
+            return
+        if is_npu_available():
+            self.device = 'npu'
+            return
+        if is_musa_available():
+            self.device = 'musa'
+            return
 
-            try:
-                pytorch_version = torch.__version__.split('.')[:2]
-                if int(pytorch_version[0]) > 2 or (
-                        int(pytorch_version[0]) == 2 and int(pytorch_version[1]) >= 4):
-                    pass
-                else:
-                    import intel_extension_for_pytorch as ipex
-                if torch.xpu.is_available():
-                    self.device = 'xpu'
-                    return
-            except ImportError:
-                pass
+        isdirectml, device = is_directml_available()
+        if isdirectml:
+            self.device = device
+            return
 
-            try:
-                import torch_npu
-                if torch.npu.is_available():
-                    self.device = 'npu'
-                    return
-            except ImportError:
-                pass
-
-            self.device = 'cpu'
+        self.device = 'cpu'
 
 
 ##########################################################################

@@ -33,6 +33,8 @@ Contributions for additional device support are welcome.
    ```
    cd rwkv-kit
    pip install -r requirements.txt
+   # you need to install triton and rwkv-fla if you want to use triton kernel
+   pip install rwkv-fla[cuda] # pip install rwkv-fla[xpu], pip install rwkv-fla[rocm]
    ```
 
 3. Download the RWKV6 model from [BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main) and place the weights in the `weight` folder.
