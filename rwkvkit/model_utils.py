@@ -59,6 +59,11 @@ class RWKVConfig:
             except ImportError:
                 raise ImportError(
                     "Please install triton to use the triton prefill kernel.")
+            try:
+                import rwkvfla
+            except ImportError:
+                raise ImportError(
+                    "Please install rwkv-fla to use the triton prefill kernel.")
         if self.use_jit:
             global JITMODULE, JITSCRIPT
             JITMODULE = torch.jit.ScriptModule if self.use_jit else nn.Module
@@ -82,6 +87,7 @@ class RWKVConfig:
         isdirectml, device = is_directml_available()
         if isdirectml:
             self.device = device
+            assert 'triton' not in self.prefill_kernel, "DirectML can not use Triton."
             return
 
         self.device = 'cpu'
